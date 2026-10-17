@@ -17,6 +17,7 @@
 package cgroup
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -255,11 +256,11 @@ func TestCheckControllers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cg := cgroupSystemd{
-				Name:            "123",
-				Parent:          "test.slice",
-				ScopePrefix:     "runsc",
-				propControllers: tc.requested,
-				cgroupV2:        cgroupV2{Mountpoint: t.TempDir()},
+				Name:                 "123",
+				Parent:               "test.slice",
+				ScopePrefix:          "runsc",
+				RequestedControllers: tc.requested,
+				cgroupV2:             cgroupV2{Mountpoint: t.TempDir()},
 			}
 			path := cg.MakePath("")
 			if err := os.MkdirAll(path, 0755); err != nil {
@@ -279,14 +280,73 @@ func TestCheckControllers(t *testing.T) {
 
 func TestCheckControllersUnreadable(t *testing.T) {
 	cg := cgroupSystemd{
-		Name:            "123",
-		Parent:          "test.slice",
-		ScopePrefix:     "runsc",
-		propControllers: []string{"cpu"},
-		cgroupV2:        cgroupV2{Mountpoint: t.TempDir()},
+		Name:                 "123",
+		Parent:               "test.slice",
+		ScopePrefix:          "runsc",
+		RequestedControllers: []string{"cpu"},
+		cgroupV2:             cgroupV2{Mountpoint: t.TempDir()},
 	}
 	if err := cg.checkControllers(); err == nil {
 		t.Error("checkControllers() = nil, want error when cgroup.controllers is missing")
+	}
+}
+
+func TestCheckControllersAfterSerialization(t *testing.T) {
+	cg := &cgroupSystemd{
+		Name:        "123",
+		Parent:      "test.slice",
+		ScopePrefix: "runsc",
+		Rootless:    true,
+		ManagerCG:   "/user.slice/user-1000.slice/user@1000.service",
+		cgroupV2: cgroupV2{
+			Mountpoint:  t.TempDir(),
+			Controllers: mandatoryControllers,
+		},
+	}
+	if err := cg.Install(&specs.LinuxResources{
+		Memory: &specs.LinuxMemory{Limit: int64Ptr(1024)},
+	}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	path := cg.MakePath("")
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A restored cgroup must still reject the missing memory controller.
+	if err := os.WriteFile(filepath.Join(path, controllersFile), []byte("cpu pids\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(&CgroupJSON{Cgroup: cg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored CgroupJSON
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	got := restored.Cgroup.(*cgroupSystemd)
+	if !got.Rootless || got.MakePath("") != path {
+		t.Fatalf("restored cgroup points to wrong manager: %+v", got)
+	}
+	if err := got.checkControllers(); err == nil {
+		t.Fatal("restored cgroup accepted an unavailable requested controller")
+	}
+}
+
+func TestUpdateReplacesProperties(t *testing.T) {
+	// Fail before touching a systemd unit, after translating the resources.
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+filepath.Join(t.TempDir(), "missing-bus"))
+	cg := &cgroupSystemd{Rootless: true}
+	cg.Controllers = mandatoryControllers
+	for _, limit := range []int64{1024, 2048} {
+		if err := cg.Update(&specs.LinuxResources{
+			Memory: &specs.LinuxMemory{Limit: &limit},
+		}); err == nil {
+			t.Fatal("Update unexpectedly connected to missing bus")
+		}
+		if len(cg.properties) != 1 || cg.properties[0].Name != "MemoryMax" || cg.properties[0].Value.Value() != uint64(limit) {
+			t.Fatalf("Update retained stale properties: %v", cg.properties)
+		}
 	}
 }
 

@@ -130,27 +130,12 @@ func (c *cgroupV2) createCgroupPaths() (bool, error) {
 				// unusable reports an error when its limits are applied. runc behaves
 				// the same way, see
 				// https://github.com/opencontainers/cgroups/blob/79cbc7c/fs2/create.go
-				var mandatoryFailed, otherFailed []string
-				var mandatoryErr error
 				for _, controller := range c.Controllers {
-					err := writeFile(subtreeFile, []byte("+"+controller), 0700)
-					if err == nil {
-						continue
+					if err := writeFile(subtreeFile, []byte("+"+controller), 0700); err != nil {
+						// An ancestor may already have enabled the controller even
+						// when this caller cannot write its subtree_control file.
+						log.Debugf("Unable to enable cgroup controller %s in %q: %v", controller, current, err)
 					}
-					if ctrlr, ok := controllers2[controller]; ok && !ctrlr.optional() {
-						mandatoryFailed = append(mandatoryFailed, controller)
-						if mandatoryErr == nil {
-							mandatoryErr = err
-						}
-						continue
-					}
-					otherFailed = append(otherFailed, controller)
-				}
-				if len(otherFailed) > 0 {
-					log.Debugf("Unable to enable cgroup controllers %s in %q: %v", strings.Join(otherFailed, ","), current, err)
-				}
-				if len(mandatoryFailed) > 0 {
-					log.Warningf("Unable to enable mandatory cgroup controllers %s in %q: %v; resource limits for them will NOT be applied", strings.Join(mandatoryFailed, ","), current, mandatoryErr)
 				}
 			}
 		}

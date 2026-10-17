@@ -70,16 +70,16 @@ type cgroupSystemd struct {
 	// Unit cgroups are nested under it. It is empty for the system instance,
 	// which manages units at the root of the hierarchy.
 	ManagerCG string
+	// RequestedControllers must survive serialization so that processes joining
+	// an existing scope also verify the controllers its limits depend on.
+	RequestedControllers []string `json:"requestedControllers,omitempty"`
 
 	// initialResources is retained from Install until a successful Join.
 	// It is not serialized; Update receives the current resources explicitly.
 	initialResources *specs.LinuxResources
 
 	properties []systemdDbus.Property
-	// propControllers are the controllers for which properties were generated,
-	// i.e. those the runtime spec actually requests limits for.
-	propControllers []string
-	dbusConn        *systemdDbus.Conn
+	dbusConn   *systemdDbus.Conn
 }
 
 // checkControllers returns an error if a limit was requested for a controller
@@ -89,7 +89,7 @@ type cgroupSystemd struct {
 //
 // Preconditions: The cgroup must have been created.
 func (c *cgroupSystemd) checkControllers() error {
-	if len(c.propControllers) == 0 {
+	if len(c.RequestedControllers) == 0 {
 		return nil
 	}
 	path := c.MakePath("")
@@ -102,7 +102,7 @@ func (c *cgroupSystemd) checkControllers() error {
 		available[name] = struct{}{}
 	}
 	var missing []string
-	for _, name := range c.propControllers {
+	for _, name := range c.RequestedControllers {
 		if _, ok := available[name]; !ok {
 			missing = append(missing, name)
 		}
@@ -355,6 +355,9 @@ func (c *cgroupSystemd) Install(res *specs.LinuxResources) error {
 // Update updates the cgroup resources of an existing systemd unit.
 func (c *cgroupSystemd) Update(res *specs.LinuxResources) error {
 	log.Debugf("Updating systemd cgroup resource controller under %v", c.Parent)
+	// An update sends only its own properties, including when retrying after a
+	// failed update. Do not replay stale values from Install or an earlier call.
+	c.properties = nil
 	if err := c.updateControllersProps(res); err != nil {
 		return err
 	}
@@ -368,6 +371,9 @@ func (c *cgroupSystemd) Update(res *specs.LinuxResources) error {
 	// Our systemd units are transient, hence runtime=true.
 	if err := c.dbusConn.SetUnitPropertiesContext(ctx, c.unitName(), true /* runtime */, c.properties...); err != nil {
 		return fmt.Errorf("error setting systemd unit properties: %v", err)
+	}
+	if err := c.checkControllers(); err != nil {
+		return err
 	}
 	return (&io2{}).set(res, c.MakePath(""))
 }
@@ -423,6 +429,9 @@ func (c *cgroupSystemd) Join() (func(), error) {
 			return nil, fmt.Errorf("unknown job completion status %q", s)
 		}
 	} else if unitAlreadyExists(err) {
+		if err := c.checkControllers(); err != nil {
+			return nil, err
+		}
 		if err := c.dbusConn.AttachProcessesToUnit(timedCtx, unitName, "" /* subcgroup */, []uint32{uint32(os.Getpid())}); err != nil {
 			return nil, fmt.Errorf("error joining systemd unit `%s`: %w", unitName, err)
 		}
@@ -554,7 +563,7 @@ func newProp(name string, units any) systemdDbus.Property {
 
 func (c *cgroupSystemd) updateControllersProps(res *specs.LinuxResources) error {
 	// Update() may be called more than once.
-	c.propControllers = nil
+	c.RequestedControllers = nil
 	for controllerName, ctrlr := range controllers2 {
 		// First check if our controller is found in the system.
 		found := false
@@ -570,7 +579,7 @@ func (c *cgroupSystemd) updateControllersProps(res *specs.LinuxResources) error 
 				return err
 			}
 			if len(props) > 0 {
-				c.propControllers = append(c.propControllers, controllerName)
+				c.RequestedControllers = append(c.RequestedControllers, controllerName)
 			}
 			c.properties = append(c.properties, props...)
 			continue
