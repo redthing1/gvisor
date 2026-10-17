@@ -32,5 +32,9 @@ case "$1" in
         make "${common[@]}" copy OPTIONS='-c opt' TARGETS=//:release "DESTINATION=$stage"
         python3 mim/package.py "$stage" /out
         ;;
+    packages)
+        version=$(python3 -c 'import json; print(json.load(open("mim/release.json"))["version"])')
+        python3 mim/distro.py "/out/mim-gvisor-$version-$(uname -m).tar.bz2" /out
+        ;;
     *) exit 2 ;;
 esac

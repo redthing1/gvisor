@@ -2,8 +2,8 @@
 set -euo pipefail
 
 case "${1:-}" in
-    test|bundle) action=$1 ;;
-    *) printf 'usage: mim/build {test|bundle}\n' >&2; exit 2 ;;
+    test|bundle|packages) action=$1 ;;
+    *) printf 'usage: mim/build {test|bundle|packages}\n' >&2; exit 2 ;;
 esac
 if [[ $# != 1 || $(id -u) == 0 ]]; then
     printf 'Run with one action under an ordinary user account.\n' >&2

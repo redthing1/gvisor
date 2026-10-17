@@ -27,7 +27,7 @@ RUN set -eu; \
         *) exit 1 ;; \
     esac; \
     apt-get update; \
-    apt-get install -y --no-install-recommends clang libbpf-dev $cross; \
+    apt-get install -y --no-install-recommends clang libbpf-dev rpm $cross; \
     rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1000 builder

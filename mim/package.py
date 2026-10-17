@@ -20,6 +20,8 @@ import io
 import json
 import os
 import platform
+import re
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -39,6 +41,8 @@ def package(stage: Path, destination: Path) -> Path:
     if git("status", "--porcelain"):
         raise ValueError("bundle requires a clean source checkout")
     release = json.loads(Path("mim/release.json").read_text())
+    if not re.fullmatch(r"[0-9][a-z0-9.+-]*", release["version"]):
+        raise ValueError("invalid release version")
     subprocess.run(
         ["git", "merge-base", "--is-ancestor", release["upstream"]["commit"], "HEAD"],
         check=True,
@@ -51,8 +55,26 @@ def package(stage: Path, destination: Path) -> Path:
             files[path.relative_to(stage).as_posix()] = path
     if not {"runsc", "gvisor-bin/gvisor_sentry"} <= files.keys():
         raise ValueError("incomplete runtime distribution")
+    policy = json.loads(Path("mim/policy.json").read_text())
+    template = Path("mim/runtime.sh").read_text()
+    profiles = {}
+    for name, extra_flags in policy["profiles"].items():
+        flags = [*policy["flags"], *extra_flags]
+        relative = f"profiles/{name}/runsc"
+        path = stage / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            template.replace("@FLAGS@", shlex.join([f"--{f}" for f in flags]))
+        )
+        path.chmod(0o755)
+        files[relative] = path
+        profiles[name] = {"path": relative, "flags": flags}
     files["LICENSE"] = Path("LICENSE")
+    epoch = int(git("show", "-s", "--format=%ct", "HEAD"))
     release.update(
+        source_date_epoch=epoch,
+        policy_version=policy["version"],
+        profiles=profiles,
         source_commit=git("rev-parse", "HEAD"),
         architecture=platform.machine(),
         builder_image=os.environ["MIM_BUILDER_IMAGE"],
@@ -62,7 +84,6 @@ def package(stage: Path, destination: Path) -> Path:
     manifest = (json.dumps(release, indent=2, sort_keys=True) + "\n").encode()
     name = f"mim-gvisor-{release['version']}-{release['architecture']}"
     archive = destination / f"{name}.tar.bz2"
-    epoch = int(git("show", "-s", "--format=%ct", "HEAD"))
     with tarfile.open(archive, "w:bz2") as output:
         for path in sorted([*files, "manifest.json"]):
             entry = tarfile.TarInfo(f"{name}/{path}")

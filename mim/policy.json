@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "flags": [
+    "platform=systrap",
+    "directfs=false",
+    "overlay2=none",
+    "file-access-mounts=shared",
+    "ignore-cgroups=false",
+    "systemd-cgroup=true",
+    "host-settings=check",
+    "allow-flag-override=false",
+    "allow-suid=false",
+    "net-raw=false",
+    "host-fifo=none",
+    "character-device-policy=emulated-only"
+  ],
+  "profiles": {
+    "offline": ["network=none", "host-uds=none"],
+    "offline-agent": ["network=none", "host-uds=open"],
+    "online": ["network=sandbox", "host-uds=none"],
+    "online-agent": ["network=sandbox", "host-uds=open"]
+  }
+}
