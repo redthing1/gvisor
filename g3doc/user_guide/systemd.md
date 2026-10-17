@@ -63,7 +63,9 @@ Note that systemd accepts properties for controllers that have not been
 delegated to it, and silently does not apply them. When runsc runs
 unprivileged, controllers other than those delegated to the per-user systemd
 instance are therefore unavailable. runsc rejects requested systemd limits when
-their controllers are unavailable in the scope. See `systemd.resource-control(5)`
+their controllers are unavailable in the scope. The systemd driver leaves
+ancestor controller activation to systemd and respects `DisableControllers=`.
+See `systemd.resource-control(5)`
 and the `Delegate=` directive in `systemd.exec(5)`.
 
 The set of runtime spec resources which is translated by runsc to systemd unit

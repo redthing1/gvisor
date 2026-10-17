@@ -53,6 +53,16 @@ Profiles require the systemd cgroup driver and retain Gofer-mediated filesystem
 access and Podman's writable rootfs. They do not verify the engine's OCI grants
 or provide an aggregate resource budget for conmon and networking helpers.
 
+To exercise controller refusal on a Linux host with a user systemd manager:
+
+```sh
+python3 mim/check-controllers.py BUNDLE --image TRUSTED_LOCAL_IMAGE
+```
+
+The probe verifies an independent ancestor budget before creating its test
+container. It disables memory control only in an owned child slice, initializes
+without starting a workload, and removes its container and transient units.
+
 ## Maintain
 
 Keep `master` aligned with upstream. Downstream release branches start at the

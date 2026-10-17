@@ -440,9 +440,9 @@ func (c *cgroupSystemd) Join() (func(), error) {
 	} else {
 		return nil, fmt.Errorf("systemd error: %w", err)
 	}
-	if _, err = c.createCgroupPaths(); err != nil {
-		return nil, err
-	}
+	// systemd owns the scope and its ancestor controllers. Enabling controllers
+	// here can undo DisableControllers after systemd has already skipped the
+	// requested properties, exposing controller files with unconstrained limits.
 	// The scope is a transient unit, so systemd releases it once this process
 	// exits; returning an error here does not leak it.
 	if err := c.checkControllers(); err != nil {
