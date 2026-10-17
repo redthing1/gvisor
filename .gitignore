@@ -1,5 +1,8 @@
 # Generated bazel lockfile.
 /MODULE.bazel.lock
+# Local downstream build cache and artifacts.
+/.mim-build/
+/mim/__pycache__/
 # Generated bazel symlinks.
 /bazel-*
 # Generated build event file.

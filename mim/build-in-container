@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Refuse a heavy build if the engine did not apply the requested limits.
+read -r memory_limit < /sys/fs/cgroup/memory.max
+read -r cpu_quota cpu_period < /sys/fs/cgroup/cpu.max
+read -r pids_limit < /sys/fs/cgroup/pids.max
+if [[ $memory_limit == max || $cpu_quota == max || $pids_limit == max ]] ||
+    (( memory_limit > 4294967296 || cpu_quota > 2 * cpu_period || pids_limit > 512 )); then
+    printf 'Build requires enforced memory, CPU, and process limits.\n' >&2
+    exit 1
+fi
+
+bazel='bazel --batch --output_user_root=/cache/bazel --host_jvm_args=-Xmx1g'
+# Use the process sandbox; upstream actions marked no-sandbox run locally.
+options='--jobs=2 --local_resources=cpu=2 --local_resources=memory=2048 --spawn_strategy=processwrapper-sandbox,local'
+common=(DOCKER_BUILD=false "BAZEL=$bazel" "BAZEL_OPTIONS=$options")
+
+case "$1" in
+    test)
+        python3 -m unittest discover -s mim -p '*_test.py'
+        exec make "${common[@]}" test 'TARGETS=//runsc/cgroup:cgroup_test //tools/nogo/check:check_test' \
+            'TEST_OPTIONS=--test_output=errors --keep_going --build_event_json_file=/out/tests.json'
+        ;;
+    bundle)
+        if [[ -n $(git status --porcelain) ]]; then
+            printf 'Bundle requires a clean source checkout.\n' >&2
+            exit 1
+        fi
+        stage=$(mktemp -d /out/stage.XXXXXX)
+        trap 'rm -rf -- "$stage"' EXIT
+        make "${common[@]}" copy OPTIONS='-c opt' TARGETS=//:release "DESTINATION=$stage"
+        python3 mim/package.py "$stage" /out
+        ;;
+    *) exit 2 ;;
+esac

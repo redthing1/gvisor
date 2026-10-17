@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+    test|bundle) action=$1 ;;
+    *) printf 'usage: mim/build {test|bundle}\n' >&2; exit 2 ;;
+esac
+if [[ $# != 1 || $(id -u) == 0 ]]; then
+    printf 'Run with one action under an ordinary user account.\n' >&2
+    exit 2
+fi
+
+workspace=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
+build_dir="$workspace/.mim-build"
+mkdir -p "$build_dir/cache" "$build_dir/out"
+builder_key=$(cat "$workspace/mim/Containerfile" "$workspace/mim/bazel.sha256" "$workspace/.bazelversion" | sha256sum)
+image="localhost/mim-gvisor-builder:${builder_key:0:16}-$(uname -m)"
+
+podman --remote=false build --layers --force-rm --memory=2g --cpu-period=100000 --cpu-quota=200000 \
+    --build-arg "BAZEL_VERSION=$(cat "$workspace/.bazelversion")" \
+    --file "$workspace/mim/Containerfile" --tag "$image" "$workspace/mim"
+image_id=$(podman --remote=false image inspect --format '{{.Id}}' "$image")
+run_dir=$(mktemp -d "$build_dir/run.XXXXXX")
+cleanup() {
+    if [[ -s "$run_dir/container.id" ]]; then
+        podman --remote=false rm --force --ignore "$(cat "$run_dir/container.id")" >/dev/null || return
+    fi
+    rm -rf -- "$run_dir"
+}
+trap cleanup EXIT
+
+podman --remote=false run --rm --init --cidfile "$run_dir/container.id" \
+    --label io.mim.gvisor.build=1 \
+    --cgroupns=private \
+    --userns=keep-id:uid=1000,gid=1000 --user=1000:1000 \
+    --memory=4g --memory-swap=4g --cpus=2 --pids-limit=512 \
+    --cap-drop=all --security-opt=no-new-privileges --security-opt=label=disable \
+    --env "MIM_BUILDER_IMAGE=$image_id" \
+    --volume "$workspace:/workspace:rw" \
+    --volume "$build_dir/cache:/cache:rw" \
+    --volume "$build_dir/out:/out:rw" \
+    "$image_id" "$action"
+
+printf 'Output: %s\n' "$build_dir/out"

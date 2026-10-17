@@ -1,0 +1,16 @@
+{
+  "version": "20261012.0-mim.1",
+  "upstream": {
+    "tag": "release-20261012.0",
+    "commit": "60faa657ca99f3398e04c8dbc580a848df20f2f2"
+  },
+  "patches": [
+    {
+      "source": "https://github.com/google/gvisor/pull/13853",
+      "commits": [
+        "d9df1b5be8ec3f19cc6bc5d1626002f02f1c706c",
+        "8ecc635e5e32b8eb1cb2acdc308d480f00bf7264"
+      ]
+    }
+  ]
+}
