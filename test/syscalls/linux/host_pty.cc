@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
@@ -36,6 +37,35 @@ namespace gvisor {
 namespace testing {
 
 namespace {
+
+TEST(HostPtyTest, NameAndReopen) {
+  char* fd_str = getenv("TEST_HOST_PTY_FD");
+  ASSERT_NE(fd_str, nullptr) << "TEST_HOST_PTY_FD environment variable not set";
+  int fd;
+  ASSERT_TRUE(absl::SimpleAtoi(fd_str, &fd));
+
+  char name[4096];
+  ASSERT_EQ(ttyname_r(fd, name, sizeof(name)), 0);
+  struct stat descriptor = {};
+  struct stat named = {};
+  ASSERT_THAT(fstat(fd, &descriptor), SyscallSucceeds());
+  ASSERT_THAT(stat(name, &named), SyscallSucceeds());
+  EXPECT_TRUE(S_ISCHR(named.st_mode));
+  EXPECT_EQ(descriptor.st_dev, named.st_dev);
+  EXPECT_EQ(descriptor.st_ino, named.st_ino);
+  EXPECT_EQ(descriptor.st_rdev, named.st_rdev);
+
+  const int reopened = open(name, O_RDWR | O_NOCTTY | O_CLOEXEC);
+  ASSERT_THAT(reopened, SyscallSucceeds());
+  const Cleanup close_reopened([&] { close(reopened); });
+  struct stat other = {};
+  ASSERT_THAT(fstat(reopened, &other), SyscallSucceeds());
+  EXPECT_EQ(descriptor.st_dev, other.st_dev);
+  EXPECT_EQ(descriptor.st_ino, other.st_ino);
+  EXPECT_EQ(descriptor.st_rdev, other.st_rdev);
+  struct termios termios = {};
+  ASSERT_THAT(tcgetattr(reopened, &termios), SyscallSucceeds());
+}
 
 TEST(HostPtyTest, FchmodPreservesFileType) {
   char* fd_str = getenv("TEST_HOST_PTY_FD");

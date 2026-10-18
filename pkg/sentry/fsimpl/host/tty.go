@@ -21,6 +21,7 @@ import (
 	"gvisor.dev/gvisor/pkg/hostarch"
 	"gvisor.dev/gvisor/pkg/marshal/primitive"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
+	"gvisor.dev/gvisor/pkg/sentry/fsimpl/kernfs"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/unimpl"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
@@ -35,6 +36,33 @@ import (
 // +stateify savable
 type TTYFileDescription struct {
 	fileDescription
+}
+
+// TTYRegistry owns the guest device name of an imported terminal.
+type TTYRegistry interface {
+	UnregisterTTY(ctx context.Context, index uint32)
+}
+
+// VFSFileDescription returns the file description for this terminal.
+func (t *TTYFileDescription) VFSFileDescription() *vfs.FileDescription {
+	return &t.vfsfd
+}
+
+// RegisterDevice gives a newly imported TTY a guest devpts identity. The caller
+// must hold a reference on the inode and must not have published it yet. The
+// registry keeps a weak reference, removed when the last inode reference ends.
+func (t *TTYFileDescription) RegisterDevice(registry TTYRegistry, mnt *vfs.Mount, devMinor, index uint32) kernfs.Inode {
+	i := t.inode
+	if i.ttyRegistry != nil {
+		panic("host TTY is already registered")
+	}
+	i.ttyRegistry = registry
+	i.ttyMount = mnt
+	mnt.IncRef()
+	i.devMinor = devMinor
+	i.ino = uint64(index) + 3
+	i.tty = kernel.NewTTY(index, i)
+	return i
 }
 
 // Release implements vfs.FileDescriptionImpl.Release.

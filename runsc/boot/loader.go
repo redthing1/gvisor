@@ -1656,21 +1656,7 @@ func (l *Loader) startSubcontainer(spec *specs.Spec, conf *config.Config, cid st
 
 // +checklocks:l.mu
 func (l *Loader) createContainerProcess(info *containerInfo) (*kernel.ThreadGroup, *host.TTYFileDescription, error) {
-	// Create the FD map, which will set stdin, stdout, and stderr.
 	ctx := info.procArgs.NewContext(l.k)
-	fdTable, ttyFile, err := createFDTable(ctx, info.spec.Process.Terminal, info.stdioFDs, info.passFDs, info.spec.Process.User, info.containerName)
-	if err != nil {
-		return nil, nil, fmt.Errorf("importing fds: %w", err)
-	}
-	info.procArgs.StartupTimeline.Reached("FD table created")
-	// CreateProcess takes a reference on fdTable if successful. We won't need
-	// ours either way.
-	info.procArgs.FDTable = fdTable
-
-	if ttyFile != nil {
-		info.procArgs.TTY = ttyFile.TTY()
-	}
-
 	if info.execFD != nil {
 		if info.procArgs.Filename != "" {
 			return nil, nil, fmt.Errorf("process must either be started from a file or a filename, not both")
@@ -1733,6 +1719,20 @@ func (l *Loader) createContainerProcess(info *containerInfo) (*kernel.ThreadGrou
 		}
 	}()
 
+	// Import descriptors after mounting devpts so donated terminals can be named.
+	fdTable, ttyFile, err := createFDTable(ctx, info.spec.Process.Terminal, info.stdioFDs, info.passFDs, info.spec.Process.User, info.containerName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("importing fds: %w", err)
+	}
+	// CreateProcess takes a reference on fdTable if successful. We won't need
+	// ours either way.
+	defer fdTable.DecRef(ctx)
+	info.procArgs.FDTable = fdTable
+	if ttyFile != nil {
+		info.procArgs.TTY = ttyFile.TTY()
+	}
+	info.procArgs.StartupTimeline.Reached("FD table created")
+
 	// Add the HOME environment variable if it is not already set.
 	info.procArgs.Envv, err = user.MaybeAddExecUserHome(ctx, info.procArgs.MountNamespace,
 		info.procArgs.Credentials.RealKUID, info.procArgs.Envv)
@@ -1746,9 +1746,6 @@ func (l *Loader) createContainerProcess(info *containerInfo) (*kernel.ThreadGrou
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating process: %w", err)
 	}
-	// CreateProcess takes a reference on FDTable if successful.
-	info.procArgs.FDTable.DecRef(ctx)
-
 	// Install seccomp filters with the new task if there are any.
 	program, err := buildOCISeccompProgram(info.conf, info.spec)
 	if err != nil {

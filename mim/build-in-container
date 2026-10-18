@@ -19,7 +19,13 @@ common=(DOCKER_BUILD=false "BAZEL=$bazel" "BAZEL_OPTIONS=$options")
 case "$1" in
     test)
         python3 -m unittest discover -s mim -p '*_test.py'
-        exec make "${common[@]}" test 'TARGETS=//runsc/cgroup:cgroup_test //tools/nogo/check:check_test' \
+        targets=(
+            //runsc/cgroup:cgroup_test //tools/nogo/check:check_test
+            //pkg/sentry/fsimpl/devpts:devpts_test //pkg/sentry/control:control_test
+            //pkg/sentry/fsimpl/host:host_nogo //pkg/sentry/fsimpl/devpts:devpts_nogo
+            //pkg/sentry/fdimport:fdimport_nogo //test/syscalls:host_pty_test_native
+        )
+        exec make "${common[@]}" test "TARGETS=${targets[*]}" \
             'TEST_OPTIONS=--test_output=errors --keep_going --build_event_json_file=/out/tests.json'
         ;;
     bundle)

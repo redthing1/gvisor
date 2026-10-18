@@ -64,11 +64,12 @@ func (t *Terminal) OpenTTY(ctx context.Context, mnt *vfs.Mount, vfsd *vfs.Dentry
 		return nil, linuxerr.EIO
 	}
 	t.root.mu.Lock()
-	ri, ok := t.root.replicas[t.replicaKTTY.Index()]
+	inode, ok := t.root.replicas[t.replicaKTTY.Index()]
 	t.root.mu.Unlock()
 	if !ok {
 		return nil, linuxerr.EIO
 	}
+	ri := inode.(*replicaInode)
 	fd := &replicaFileDescription{
 		inode: ri,
 	}

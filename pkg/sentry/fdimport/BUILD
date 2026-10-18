@@ -14,6 +14,7 @@ go_library(
     deps = [
         "//pkg/context",
         "//pkg/fd",
+        "//pkg/sentry/fsimpl/devpts",
         "//pkg/sentry/fsimpl/host",
         "//pkg/sentry/kernel",
         "//pkg/sentry/kernel/auth",

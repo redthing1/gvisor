@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/fd"
+	"gvisor.dev/gvisor/pkg/sentry/fsimpl/devpts"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/host"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
@@ -86,12 +87,11 @@ func Import(ctx context.Context, fdTable *kernel.FDTable, fds map[int]*fd.FD, op
 			if ttyFile == nil {
 				fdOpts.IsTTY = true
 				var err error
-				appFile, err = host.NewFD(ctx, mnt, hostFD.FD(), &fdOpts)
+				appFile, err = importFile(ctx, mnt, hostFD, &fdOpts)
 				if err != nil {
 					return nil, err
 				}
 				defer appFile.DecRef(ctx)
-				hostFD.Release() // FD is transferred to host FD.
 
 				// Remember this in the TTY file, as we will use it for the other stdio
 				// FDs.
@@ -105,12 +105,11 @@ func Import(ctx context.Context, fdTable *kernel.FDTable, fds map[int]*fd.FD, op
 		} else {
 			var err error
 			fdOpts.IsTTY = opts.SupportTTYs && host.IsTTY(hostFD.FD())
-			appFile, err = host.NewFD(ctx, mnt, hostFD.FD(), &fdOpts)
+			appFile, err = importFile(ctx, mnt, hostFD, &fdOpts)
 			if err != nil {
 				return nil, err
 			}
 			defer appFile.DecRef(ctx)
-			hostFD.Release() // FD is transferred to host FD.
 		}
 
 		df, err := fdTable.NewFDAt(ctx, int32(appFD), appFile, fdFlags[hostFD])
@@ -126,6 +125,19 @@ func Import(ctx context.Context, fdTable *kernel.FDTable, fds map[int]*fd.FD, op
 		return nil, nil
 	}
 	return ttyFile.Impl().(*host.TTYFileDescription), nil
+}
+
+func importFile(ctx context.Context, mnt *vfs.Mount, hostFD *fd.FD, opts *host.NewFDOptions) (*vfs.FileDescription, error) {
+	file, err := host.NewFD(ctx, mnt, hostFD.FD(), opts)
+	if err != nil {
+		return nil, err
+	}
+	hostFD.Release()
+	if tty, ok := file.Impl().(*host.TTYFileDescription); ok {
+		defer file.DecRef(ctx)
+		return devpts.ImportTTY(ctx, tty)
+	}
+	return file, nil
 }
 
 func getFDFlags(f *fd.FD) (kernel.FDFlags, error) {

@@ -18,7 +18,8 @@ and the upstream dependency declarations. It runs without privileged mode or a
 host engine socket, with two CPUs, 4 GiB memory, and two concurrent build jobs.
 Build caches and output live under `.mim-build/`.
 
-The test action runs the cgroup, build-tooling, runtime-profile, and packaging suites.
+The test action runs cgroup, terminal, static-analysis, runtime-profile, and
+packaging checks, including terminal syscall tests against native Linux.
 Bundle creation requires a clean checkout. The archive contains runsc, its
 sidecars, the containerd shim, license, and a manifest identifying the source,
 builder image, and file checksums. A SHA-256 file accompanies the archive.

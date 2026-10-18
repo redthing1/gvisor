@@ -127,11 +127,9 @@ func isEpollable(fd int) bool {
 //
 // +stateify savable
 type inode struct {
-	kernfs.InodeNoStatFS
-	kernfs.InodeAnonymous // inode is effectively anonymous because it represents a donated FD.
 	kernfs.InodeNotDirectory
 	kernfs.InodeNotSymlink
-	kernfs.InodeTemporary // This holds no meaning as this inode can't be Looked up and is always valid.
+	kernfs.InodeTemporary // Unreferenced imported-file dentries are not cached.
 	kernfs.InodeWatches
 	kernfs.InodeFSOwned
 
@@ -152,7 +150,7 @@ type inode struct {
 
 	// ino is an inode number unique within this filesystem.
 	//
-	// This field is initialized at creation time and is immutable.
+	// This field is initialized before the inode is published and is immutable thereafter.
 	ino uint64
 
 	// ftype is the file's type (a linux.S_IFMT mask).
@@ -189,7 +187,8 @@ type inode struct {
 	// This field is initialized at creation time and is immutable.
 	readonly bool
 
-	// devMinor is the immutable minor device number for this inode's filesystem.
+	// devMinor is the minor device number for this inode's filesystem. It is
+	// initialized before publication and is immutable thereafter.
 	devMinor uint32
 
 	// Event queue for blocking operations.
@@ -227,6 +226,14 @@ type inode struct {
 	// This pointer is initialized at creation time and is immutable.
 	tty *kernel.TTY
 
+	// ttyRegistry names this imported terminal in guest devpts. It is set
+	// before publication; the registry holds a weak inode reference.
+	ttyRegistry TTYRegistry
+
+	// ttyMount keeps the guest filesystem alive even when only a controlling
+	// terminal reference, rather than a file description, retains this inode.
+	ttyMount *vfs.Mount
+
 	termiosMu sync.Mutex `state:"nosave"`
 
 	// If the inode corresponds to a TTY, termios is the cached termios struct.
@@ -259,8 +266,8 @@ func newInode(ctx context.Context, fs *filesystem, hostFD int, savable bool, res
 	}
 
 	if isTTY {
-		// Allocate a new TTY for this inode. TTY number does not
-		// matter, since this inode is not reachable via devpts.
+		// Anonymous terminals start with index zero. Registration in devpts
+		// supplies the guest index before publication.
 		i.tty = kernel.NewTTY(0, i)
 		i.termios = linux.DefaultReplicaTermios
 	}
@@ -513,14 +520,17 @@ func (i *inode) Stat(ctx context.Context, vfsfs *vfs.Filesystem, opts vfs.StatOp
 		DevMajor:       linux.UNNAMED_MAJOR,
 		DevMinor:       i.devMinor,
 	}
+	if i.ttyRegistry != nil {
+		ls.RdevMajor = linux.UNIX98_PTY_REPLICA_MAJOR
+		ls.RdevMinor = i.tty.Index()
+	}
 	// Clear STATX_ATTR_MOUNT_ROOT passed through from the host; the sentry VFS
 	// sets it from its own mounts.
 	ls.Attributes &^= linux.STATX_ATTR_MOUNT_ROOT
 	ls.AttributesMask &^= linux.STATX_ATTR_MOUNT_ROOT
 
-	// Copy other fields that were returned by the host. RdevMajor/RdevMinor
-	// are never copied (and therefore left as zero), so as not to expose host
-	// device numbers.
+	// Copy other fields that were returned by the host. Host RdevMajor/RdevMinor
+	// are never copied; named terminals use only their guest device numbers.
 	ls.Mask |= s.Mask & linux.STATX_ALL
 	if s.Mask&linux.STATX_TYPE != 0 {
 		if i.virtualOwner.enabled {
@@ -591,7 +601,7 @@ func (i *inode) statxFromStat(devMinor uint32) (linux.Statx, error) {
 
 	// As with inode.Stat(), we always use internal device and inode numbers,
 	// and never expose the host's represented device numbers.
-	return linux.Statx{
+	stat := linux.Statx{
 		Mask:     linux.STATX_BASIC_STATS,
 		Blksize:  uint32(s.Blksize),
 		Nlink:    uint32(s.Nlink),
@@ -606,7 +616,25 @@ func (i *inode) statxFromStat(devMinor uint32) (linux.Statx, error) {
 		Mtime:    timespecToStatxTimestamp(s.Mtim),
 		DevMajor: linux.UNNAMED_MAJOR,
 		DevMinor: devMinor,
-	}, nil
+	}
+	if i.ttyRegistry != nil {
+		stat.RdevMajor = linux.UNIX98_PTY_REPLICA_MAJOR
+		stat.RdevMinor = i.tty.Index()
+	}
+	return stat, nil
+}
+
+// Anonymous implements kernfs.Inode.Anonymous.
+func (i *inode) Anonymous() bool {
+	return i.ttyRegistry == nil
+}
+
+// StatFS implements kernfs.Inode.StatFS.
+func (i *inode) StatFS(context.Context, *vfs.Filesystem) (linux.Statfs, error) {
+	if i.ttyRegistry != nil {
+		return vfs.GenericStatFS(linux.DEVPTS_SUPER_MAGIC), nil
+	}
+	return linux.Statfs{}, linuxerr.ENOSYS
 }
 
 func (i *inode) stat(stat *unix.Stat_t) error {
@@ -714,6 +742,9 @@ func (i *inode) SetStat(ctx context.Context, fs *vfs.Filesystem, creds *auth.Cre
 // +checklocksexclude:i.queue.mu
 func (i *inode) DecRef(ctx context.Context) {
 	i.inodeRefs.DecRef(func() {
+		if i.ttyRegistry != nil {
+			i.ttyRegistry.UnregisterTTY(ctx, i.tty.Index())
+		}
 		if i.hostFD >= 0 {
 			if i.epollable {
 				fdnotifier.RemoveFD(int32(i.hostFD))
@@ -724,6 +755,9 @@ func (i *inode) DecRef(ctx context.Context) {
 		// with fdnotifier.RemoveFD. Instead, notify the queue explicitly.
 		i.queue.Notify(waiter.EventHUp | waiter.ReadableEvents | waiter.WritableEvents)
 		i.mmapFile.MappableRelease()
+		if i.ttyMount != nil {
+			i.ttyMount.DecRef(ctx)
+		}
 	})
 }
 
@@ -747,6 +781,7 @@ func (i *inode) Open(ctx context.Context, rp *vfs.ResolvingPath, d *kernfs.Dentr
 const supportedOpenFlags = unix.O_ACCMODE | unix.O_NONBLOCK | unix.O_DSYNC | unix.O_SYNC | unix.O_APPEND
 
 func (i *inode) open(ctx context.Context, d *kernfs.Dentry, mnt *vfs.Mount, fileType linux.FileMode, flags uint32) (*vfs.FileDescription, error) {
+	ttyFlags := flags
 	flags &= supportedOpenFlags
 	switch fileType {
 	case unix.S_IFSOCK:
@@ -764,7 +799,7 @@ func (i *inode) open(ctx context.Context, d *kernfs.Dentry, mnt *vfs.Mount, file
 
 	case unix.S_IFREG, unix.S_IFIFO, unix.S_IFCHR:
 		if i.tty != nil {
-			return i.OpenTTY(ctx, mnt, d.VFSDentry(), vfs.OpenOptions{Flags: flags})
+			return i.OpenTTY(ctx, mnt, d.VFSDentry(), vfs.OpenOptions{Flags: ttyFlags})
 		}
 
 		fd := &fileDescription{inode: i}
@@ -802,6 +837,11 @@ func (i *inode) OpenTTY(ctx context.Context, mnt *vfs.Mount, d *vfs.Dentry, opts
 	}); err != nil {
 		i.DecRef(ctx)
 		return nil, err
+	}
+	if i.ttyRegistry != nil && opts.Flags&linux.O_NOCTTY == 0 {
+		if task := kernel.TaskFromContext(ctx); task != nil {
+			_ = task.ThreadGroup().SetControllingTTY(ctx, i.tty, false /* steal */, vfsfd.IsReadable())
+		}
 	}
 	return vfsfd, nil
 }

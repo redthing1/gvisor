@@ -19,6 +19,7 @@ import (
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/sentry/contexttest"
+	"gvisor.dev/gvisor/pkg/sentry/fsimpl/kernfs"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/usermem"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -175,7 +176,7 @@ func TestReplicaModeAndOwner(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := &rootInode{
 				opts:     test.opts,
-				replicas: make(map[uint32]*replicaInode),
+				replicas: make(map[uint32]kernfs.Inode),
 			}
 			root.InodeAttrs.InitWithIDs(ctx, test.opts.uid, test.opts.gid, linux.UNNAMED_MAJOR, 0 /* devMinor */, 1, linux.ModeDirectory|rootMode)
 
@@ -188,10 +189,10 @@ func TestReplicaModeAndOwner(t *testing.T) {
 				t.Fatalf("no replica for terminal %d", term.n)
 			}
 
-			if got := replica.InodeAttrs.Mode().Permissions(); got != test.wantMode {
+			if got := replica.Mode().Permissions(); got != test.wantMode {
 				t.Errorf("replica mode: got %#o, want %#o", got, test.wantMode)
 			}
-			if got := replica.InodeAttrs.GID(); got != test.wantGID {
+			if got := replica.GID(); got != test.wantGID {
 				t.Errorf("replica gid: got %d, want %d", got, test.wantGID)
 			}
 			if got := root.InodeAttrs.Mode().Permissions(); got != rootMode {

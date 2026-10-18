@@ -198,7 +198,7 @@ func (fstype *FilesystemType) newFilesystem(ctx context.Context, vfsObj *vfs.Vir
 	// Construct the root directory. This is always inode id 1.
 	root := &rootInode{
 		opts:     opts,
-		replicas: make(map[uint32]*replicaInode),
+		replicas: make(map[uint32]kernfs.Inode),
 	}
 	// Linux fixes the root mode and ownership independently of mount options.
 	// See fs/devpts/inode.c:devpts_fill_super() and fs/inode.c:inode_init_always().
@@ -262,10 +262,12 @@ type rootInode struct {
 	// opts is the mount options this filesystem was created with. Immutable.
 	opts fileSystemOpts
 
-	// replicas maps pty ids to replica inodes.
+	// replicas maps guest PTY indices to inodes. Native replicas are owned by
+	// their master; imported terminals are weakly held and unregister when
+	// their last inode reference is released.
 	//
 	// +checklocks:mu
-	replicas map[uint32]*replicaInode
+	replicas map[uint32]kernfs.Inode
 
 	// nextIdx is the next pty index to use.
 	//
@@ -372,8 +374,9 @@ func (i *rootInode) Lookup(ctx context.Context, name string) (kernfs.Inode, erro
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if ri, ok := i.replicas[uint32(idx)]; ok {
-		ri.IncRef() // This ref is passed to the dentry upon creation via Init.
+	if ri, ok := i.replicas[uint32(idx)]; ok && ri.TryIncRef() {
+		// This ref is passed to the dentry upon creation via Init. Imported
+		// terminals are weakly held and may already be releasing their inode.
 		return ri, nil
 
 	}
@@ -402,7 +405,7 @@ func (i *rootInode) IterDirents(ctx context.Context, mnt *vfs.Mount, cb vfs.Iter
 		dirent := vfs.Dirent{
 			Name:    strconv.FormatUint(uint64(id), 10),
 			Type:    linux.DT_CHR,
-			Ino:     i.replicas[uint32(id)].InodeAttrs.Ino(),
+			Ino:     uint64(id) + 3,
 			NextOff: offset + 1,
 		}
 		if err := cb.Handle(dirent); err != nil {
