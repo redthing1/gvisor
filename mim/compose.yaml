@@ -1,0 +1,44 @@
+services:
+  gitea:
+    image: ${QUALIFY_IMAGE:?Run through mim/check_compose.py}
+    pull_policy: never
+    runtime: ${QUALIFY_RUNTIME:?Select the runtime under test}
+    network_mode: pasta:--no-splice
+    container_name: ${QUALIFY_PROJECT}-gitea
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 512
+    restart: on-failure:2
+    http_proxy: false
+    security_opt:
+      - no-new-privileges
+      - label=disable
+    cap_drop: [ALL]
+    labels:
+      io.mim.gvisor.qualification: ${QUALIFY_TOKEN}
+    environment:
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__server__DISABLE_SSH: "true"
+      GITEA__server__START_SSH_SERVER: "false"
+      GITEA__server__ROOT_URL: http://127.0.0.1:3000/
+    ports:
+      - "127.0.0.1::3000"
+    healthcheck:
+      test: [CMD, gitea, --version]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - data:/var/lib/gitea
+      - config:/etc/gitea
+volumes:
+  data:
+    name: ${QUALIFY_PROJECT}-data
+    labels:
+      io.mim.gvisor.qualification: ${QUALIFY_TOKEN}
+  config:
+    name: ${QUALIFY_PROJECT}-config
+    labels:
+      io.mim.gvisor.qualification: ${QUALIFY_TOKEN}

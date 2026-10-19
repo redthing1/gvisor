@@ -16,31 +16,44 @@ bazel='bazel --batch --output_user_root=/cache/bazel --host_jvm_args=-Xmx1g'
 options='--jobs=2 --local_resources=cpu=2 --local_resources=memory=2048 --spawn_strategy=processwrapper-sandbox,local'
 common=(DOCKER_BUILD=false "BAZEL=$bazel" "BAZEL_OPTIONS=$options")
 
+test_runtime() {
+    python3 -m unittest discover -s mim -p '*_test.py'
+    local targets=(
+        //runsc/cgroup:cgroup_test //tools/nogo/check:check_test
+        //pkg/sentry/fsimpl/devpts:devpts_test //pkg/sentry/control:control_test
+        //pkg/sentry/fsimpl/host:host_nogo //pkg/sentry/fsimpl/devpts:devpts_nogo
+        //pkg/sentry/fdimport:fdimport_nogo //test/syscalls:host_pty_test_native
+    )
+    make "${common[@]}" test "TARGETS=${targets[*]}" \
+        'TEST_OPTIONS=--test_output=errors --keep_going --build_event_json_file=/out/tests.json'
+}
+
+build_bundle() (
+    source_status=$(git status --porcelain)
+    if [[ -n $source_status ]]; then
+        printf 'Bundle requires a clean source checkout.\n' >&2
+        exit 1
+    fi
+    stage=$(mktemp -d /out/stage.XXXXXX)
+    trap 'rm -rf -- "$stage"' EXIT
+    make "${common[@]}" copy OPTIONS='-c opt' TARGETS=//:release "DESTINATION=$stage"
+    python3 mim/package.py "$stage" /out
+)
+
+build_packages() {
+    local version
+    version=$(python3 -c 'import json; print(json.load(open("mim/release.json"))["version"])')
+    python3 mim/distro.py "/out/mim-gvisor-$version-$(uname -m).tar.bz2" /out
+}
+
 case "$1" in
-    test)
-        python3 -m unittest discover -s mim -p '*_test.py'
-        targets=(
-            //runsc/cgroup:cgroup_test //tools/nogo/check:check_test
-            //pkg/sentry/fsimpl/devpts:devpts_test //pkg/sentry/control:control_test
-            //pkg/sentry/fsimpl/host:host_nogo //pkg/sentry/fsimpl/devpts:devpts_nogo
-            //pkg/sentry/fdimport:fdimport_nogo //test/syscalls:host_pty_test_native
-        )
-        exec make "${common[@]}" test "TARGETS=${targets[*]}" \
-            'TEST_OPTIONS=--test_output=errors --keep_going --build_event_json_file=/out/tests.json'
-        ;;
-    bundle)
-        if [[ -n $(git status --porcelain) ]]; then
-            printf 'Bundle requires a clean source checkout.\n' >&2
-            exit 1
-        fi
-        stage=$(mktemp -d /out/stage.XXXXXX)
-        trap 'rm -rf -- "$stage"' EXIT
-        make "${common[@]}" copy OPTIONS='-c opt' TARGETS=//:release "DESTINATION=$stage"
-        python3 mim/package.py "$stage" /out
-        ;;
-    packages)
-        version=$(python3 -c 'import json; print(json.load(open("mim/release.json"))["version"])')
-        python3 mim/distro.py "/out/mim-gvisor-$version-$(uname -m).tar.bz2" /out
+    test) test_runtime ;;
+    bundle) build_bundle ;;
+    packages) build_packages ;;
+    release)
+        test_runtime
+        build_bundle
+        build_packages
         ;;
     *) exit 2 ;;
 esac

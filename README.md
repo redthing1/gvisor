@@ -1,5 +1,8 @@
 ![gVisor](g3doc/logo.png)
 
+This fork provides a versioned gVisor runtime for rootless Podman. See
+[build and installation](mim/README.md) and [Compose services](mim/compose.md).
+
 [![Build status](https://badge.buildkite.com/3b159f20b9830461a71112566c4171c0bdfd2f980a8e4c0ae6.svg?branch=master)](https://buildkite.com/gvisor/pipeline)
 [![Issue reviver](https://github.com/google/gvisor/actions/workflows/issue_reviver.yml/badge.svg)](https://github.com/google/gvisor/actions/workflows/issue_reviver.yml)
 [![CodeQL](https://github.com/google/gvisor/actions/workflows/codeql.yml/badge.svg)](https://github.com/google/gvisor/actions/workflows/codeql.yml)

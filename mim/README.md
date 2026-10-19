@@ -1,37 +1,57 @@
 # Mim gVisor
 
-A downstream gVisor distribution for rootless Podman. Source versions and patch
-provenance are recorded in [release.json](release.json).
+A downstream gVisor distribution for rootless Podman, usable directly by Compose
+or through Mim. Source versions and patch provenance are recorded in
+[release.json](release.json).
 
 ## Build
 
-Run from the checkout under an ordinary Linux user with rootless Podman:
+From a clean checkout under an ordinary Linux user with working rootless Podman:
 
 ```sh
-mim/build test
-mim/build bundle
-mim/build packages
+mim/build release
 ```
 
-The builder uses a pinned Debian image and package snapshot, verified Bazel,
-and the upstream dependency declarations. It runs without privileged mode or a
-host engine socket, with two CPUs, 4 GiB memory, and two concurrent build jobs.
-Build caches and output live under `.mim-build/`.
+This runs the focused downstream tests, builds the complete runtime bundle and
+produces RPM and Debian packages in `.mim-build/out/`. Use `test` for checks alone,
+`bundle` for the archive, or `packages` to package an existing archive.
 
-The test action runs cgroup, terminal, static-analysis, runtime-profile, and
-packaging checks, including terminal syscall tests against native Linux.
-Bundle creation requires a clean checkout. The archive contains runsc, its
-sidecars, the containerd shim, license, and a manifest identifying the source,
-builder image, and file checksums. A SHA-256 file accompanies the archive.
+The host needs Bash, Git, coreutils and rootless Podman with enforced cgroup v2
+limits. The compiler and packaging toolchains run in a pinned container, limited
+to two CPUs, 4 GiB memory and two build jobs. The builder uses a fixed Debian
+package snapshot, verified Bazel and upstream dependency declarations. Caches
+live under `.mim-build/cache/`.
 
-`packages` wraps the current bundle as RPM and Debian packages. Each release has
-its own package name and installs under `/usr/lib/mim-gvisor/VERSION/`, so upgrades
-can retain runtimes needed by existing containers. Packages contain no install
-scripts and change no engine configuration. Remove old packages only after their
-containers have been removed or explicitly upgraded.
+The archive includes runsc, sidecars, the containerd shim, license and a manifest
+identifying the source commit, builder image and file checksums. Artifacts have
+adjacent SHA-256 files. Packages are unsigned; obtain them from a trusted build
+or transfer. Checksums detect changes but do not authenticate a publisher.
 
-Archives can instead be extracted into an operator-chosen versioned directory.
-Keep the complete layout together, including `gvisor-bin/`.
+## Install and update
+
+Build once per architecture and copy the resulting package to compatible hosts.
+On Fedora, install the selected local RPM with DNF:
+
+```sh
+sudo dnf install /path/to/package.rpm
+```
+
+Each release has its own package name and installs under
+`/usr/lib/mim-gvisor/VERSION/`. Packages contain no install scripts and change no
+engine configuration. Workloads run under the rootless deployment account.
+
+For an archive installation, keep the complete layout together in a versioned
+directory, including `gvisor-bin/`. Runtime helpers need to traverse that path
+after changing credentials; a private home directory can prevent execution.
+
+To update, install the new release alongside the old one, select its versioned
+runtime path and recreate the affected containers. Installing binaries does not
+update a running sandbox. Retain old packages while running or stopped containers
+reference them. Distinct package names make release installation explicit;
+ordinary `dnf upgrade` does not select a newly named runtime release.
+
+For standalone HTTP services behind a host reverse proxy, see
+[rootless Compose](compose.md).
 
 ## Runtime profiles
 
@@ -50,24 +70,48 @@ overrides. Guest command arguments are passed through unchanged. Socket-enabled
 profiles allow access to any reachable host Unix socket; mounts determine what
 is reachable. The base `runsc` remains available for direct runtime use.
 
-Profiles require the systemd cgroup driver and retain Gofer-mediated filesystem
-access and Podman's writable rootfs. They do not verify the engine's OCI grants
-or provide an aggregate resource budget for conmon and networking helpers.
+Profiles require Podman's systemd cgroup driver, a user systemd manager and
+cgroup v2 delegation. They use Gofer-mediated filesystem access and Podman's
+writable rootfs. Compose and the engine determine mounts, credentials and other
+grants; the profiles do not provide Mim's grant verification or aggregate helper
+budgets.
 
-To exercise controller refusal on a Linux host with a user systemd manager:
+## Qualification
+
+Qualify a bundle on the intended host before adopting it. The checks require
+Python 3.11+, Git and a working rootless Podman account with a user systemd
+manager; the Compose check also needs podman-compose and pasta from passt.
 
 ```sh
+python3 mim/check_compose.py BUNDLE --pull
 python3 mim/check-controllers.py BUNDLE --image TRUSTED_LOCAL_IMAGE
 ```
 
-The probe verifies an independent ancestor budget before creating its test
-container. It disables memory control only in an owned child slice, initializes
-without starting a workload, and removes its container and transient units.
+`BUNDLE` is the `.tar.bz2` archive with its adjacent `.sha256`. The Compose check
+uses a digest-pinned Gitea image and synthetic data to exercise HTTP Git,
+health-check exec, SQLite persistence, graceful stop/start and recreation. Its
+outer budget is two CPUs, 2 GiB memory, no swap and 1,024 tasks. `--pull` permits
+downloading the fixture if missing. Fixture images stay in Podman's shared cache
+for repeated checks.
+
+The controller probe needs a trusted local image containing `/bin/sh`. It checks
+refusal of an unavailable memory controller inside an independent budget,
+without starting the application.
+
+Both checks operate on uniquely owned test resources. The Compose check prints
+its report path and retains logs in `.mim-build/compose-*`; `--output NEW_DIRECTORY`
+selects another location. Cleanup uncertainty fails the check and preserves the
+temporary runtime for diagnosis.
 
 ## Maintain
 
-Keep `master` aligned with upstream. Downstream release branches start at the
-tag in `release.json`; carry focused fixes as separate commits with their
-upstream provenance. Advance the base by replaying those changes onto a new
-release and running the tests and runtime qualification. Published builds retain
-their source identity.
+Keep focused downstream commits on the upstream release recorded in
+`release.json`. For an update, replay required changes onto the new base, drop
+changes supplied upstream and select a new downstream version. Commit the source,
+run `mim/build release` and qualify the resulting bundle on supported hosts.
+Tag the qualified source and preserve published artifact identity.
+
+Upstream publishes weekly and provides no LTS releases. Track its
+[release policy](https://gvisor.dev/release/) and security fixes, and maintain a
+regular tested update cycle. Qualify Podman/provider changes as well as runtime
+changes; the engine and network helpers remain part of the deployment.

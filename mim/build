@@ -2,8 +2,8 @@
 set -euo pipefail
 
 case "${1:-}" in
-    test|bundle|packages) action=$1 ;;
-    *) printf 'usage: mim/build {test|bundle|packages}\n' >&2; exit 2 ;;
+    test|bundle|packages|release) action=$1 ;;
+    *) printf 'usage: mim/build {test|bundle|packages|release}\n' >&2; exit 2 ;;
 esac
 if [[ $# != 1 || $(id -u) == 0 ]]; then
     printf 'Run with one action under an ordinary user account.\n' >&2
@@ -11,6 +11,13 @@ if [[ $# != 1 || $(id -u) == 0 ]]; then
 fi
 
 workspace=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
+if [[ $action == bundle || $action == release ]]; then
+    source_status=$(git -C "$workspace" status --porcelain)
+    if [[ -n $source_status ]]; then
+        printf 'Release artifacts require a clean source checkout.\n' >&2
+        exit 1
+    fi
+fi
 build_dir="$workspace/.mim-build"
 mkdir -p "$build_dir/cache" "$build_dir/out"
 builder_key=$(cat "$workspace/mim/Containerfile" "$workspace/mim/bazel.sha256" "$workspace/.bazelversion" | sha256sum)
