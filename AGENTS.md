@@ -1,5 +1,9 @@
 # AGENTS.md - Context for AI Coding Assistants
 
+Read [FORK.md](FORK.md) for downstream changes, upstream updates and releases.
+The maintained branch is `main`. Use `mim/build release` for the containerized
+downstream checks and packages; keep public changes concise and self-contained.
+
 ## Persona & Expertise
 
 You are an expert Systems Engineer specializing in Linux Kernel internals, the

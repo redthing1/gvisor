@@ -1,8 +1,8 @@
 {
-  "version": "20261012.0-mim.5",
+  "version": "20261019.0-mim.1",
   "upstream": {
-    "tag": "release-20261012.0",
-    "commit": "60faa657ca99f3398e04c8dbc580a848df20f2f2"
+    "tag": "release-20261019.0",
+    "commit": "760b80785dc53311d4c87bd2de167525a99709c1"
   },
   "patches": [
     {

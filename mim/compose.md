@@ -12,7 +12,7 @@ podman-compose, pasta from passt, a user systemd manager and cgroup v2 delegatio
 Select an installed release in the deployment's `.env`:
 
 ```dotenv
-GVISOR_VERSION=20261012.0-mim.5
+GVISOR_VERSION=20261019.0-mim.1
 ```
 
 Add these settings to an existing service, retaining its image, storage and

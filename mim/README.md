@@ -4,6 +4,34 @@ A downstream gVisor distribution for rootless Podman, usable directly by Compose
 or through Mim. Source versions and patch provenance are recorded in
 [release.json](release.json).
 
+## Install and update
+
+Download the package for your architecture and its adjacent `.sha256` file from
+[releases](https://github.com/redthing1/gvisor/releases). Verify it in the download
+directory, then install the local RPM on Fedora:
+
+```sh
+sha256sum --check PACKAGE.rpm.sha256
+sudo dnf install ./PACKAGE.rpm
+```
+
+Each release has its own package name and installs under
+`/usr/lib/mim-gvisor/VERSION/`. Packages contain no install scripts and change no
+engine configuration. Workloads run under the rootless deployment account.
+
+For standalone HTTP services behind a host reverse proxy, follow the
+[Compose recipe](compose.md). Mim is optional.
+
+To update, install the new release alongside the old one, select its versioned
+runtime path and recreate the affected containers. Installing binaries does not
+update a running sandbox. Retain old packages while running or stopped containers
+reference them. Distinct package names make release installation explicit;
+ordinary `dnf upgrade` does not select a newly named runtime release.
+
+For an archive installation, keep the complete layout together in a versioned
+directory, including `gvisor-bin/`. Runtime helpers need to traverse that path
+after changing credentials; a private home directory can prevent execution.
+
 ## Build
 
 From a clean checkout under an ordinary Linux user with working rootless Podman:
@@ -22,36 +50,14 @@ to two CPUs, 4 GiB memory and two build jobs. The builder uses a fixed Debian
 package snapshot, verified Bazel and upstream dependency declarations. Caches
 live under `.mim-build/cache/`.
 
+Persistent caches make subsequent builds incremental. Build once per architecture
+and copy the packages to qualified hosts; deployment machines need no toolchain.
+For upstream updates and publishing, follow [FORK.md](../FORK.md).
+
 The archive includes runsc, sidecars, the containerd shim, license and a manifest
 identifying the source commit, builder image and file checksums. Artifacts have
 adjacent SHA-256 files. Packages are unsigned; obtain them from a trusted build
 or transfer. Checksums detect changes but do not authenticate a publisher.
-
-## Install and update
-
-Build once per architecture and copy the resulting package to compatible hosts.
-On Fedora, install the selected local RPM with DNF:
-
-```sh
-sudo dnf install /path/to/package.rpm
-```
-
-Each release has its own package name and installs under
-`/usr/lib/mim-gvisor/VERSION/`. Packages contain no install scripts and change no
-engine configuration. Workloads run under the rootless deployment account.
-
-For an archive installation, keep the complete layout together in a versioned
-directory, including `gvisor-bin/`. Runtime helpers need to traverse that path
-after changing credentials; a private home directory can prevent execution.
-
-To update, install the new release alongside the old one, select its versioned
-runtime path and recreate the affected containers. Installing binaries does not
-update a running sandbox. Retain old packages while running or stopped containers
-reference them. Distinct package names make release installation explicit;
-ordinary `dnf upgrade` does not select a newly named runtime release.
-
-For standalone HTTP services behind a host reverse proxy, see
-[rootless Compose](compose.md).
 
 ## Runtime profiles
 
@@ -102,16 +108,3 @@ Both checks operate on uniquely owned test resources. The Compose check prints
 its report path and retains logs in `.mim-build/compose-*`; `--output NEW_DIRECTORY`
 selects another location. Cleanup uncertainty fails the check and preserves the
 temporary runtime for diagnosis.
-
-## Maintain
-
-Keep focused downstream commits on the upstream release recorded in
-`release.json`. For an update, replay required changes onto the new base, drop
-changes supplied upstream and select a new downstream version. Commit the source,
-run `mim/build release` and qualify the resulting bundle on supported hosts.
-Tag the qualified source and preserve published artifact identity.
-
-Upstream publishes weekly and provides no LTS releases. Track its
-[release policy](https://gvisor.dev/release/) and security fixes, and maintain a
-regular tested update cycle. Qualify Podman/provider changes as well as runtime
-changes; the engine and network helpers remain part of the deployment.
