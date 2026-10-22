@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'google/gvisor'
     runs-on: ubuntu-latest
     permissions:
       contents: read

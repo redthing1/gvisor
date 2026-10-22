@@ -63,6 +63,7 @@ This runs focused tests and builds the archive, RPM, DEB and their checksums in
 persistent caches. Build once per architecture and reuse the packages across
 qualified hosts. Subsequent builds reuse the builder image and Bazel cache;
 `mim/build packages` repackages an existing archive without compiling it again.
+The inherited automatic CI build runs only in `google/gvisor`.
 
 Qualify the resulting archive on a supported deployment host:
 
