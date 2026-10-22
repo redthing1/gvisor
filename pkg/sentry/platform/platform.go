@@ -121,6 +121,14 @@ type Platform interface {
 	NumCPUs() int
 }
 
+// TSCAdjustablePlatform is an optional interface that may be implemented by a
+// Platform that applies an offset to the guest TSC.
+type TSCAdjustablePlatform interface {
+	// TSCOffset returns the offset the platform applies to the guest TSC,
+	// as a two's-complement value in host TSC cycles.
+	TSCOffset() uint64
+}
+
 // NoCPUPreemptionDetection implements Platform.DetectsCPUPreemption and
 // dependent methods for Platforms that do not support this feature.
 type NoCPUPreemptionDetection struct{}
@@ -514,17 +522,6 @@ func (AddressSpaceIOUnavailable) Error() string {
 	return "platform.AddressSpaceIO currently unavailable"
 }
 
-// Requirements is used to specify platform specific requirements.
-type Requirements struct {
-	// RequiresCapSysPtrace indicates that the sandbox has to be started with
-	// the CAP_SYS_PTRACE capability.
-	RequiresCapSysPtrace bool
-
-	// FrequentHostThreadWakeups indicates that the platform wakes sleeping
-	// host threads at a very high rate.
-	FrequentHostThreadWakeups bool
-}
-
 // SeccompInfo represents seccomp-bpf data for a given platform.
 type SeccompInfo interface {
 	// Variables returns a map from named variables to the value they should
@@ -636,6 +633,9 @@ type Options struct {
 	// It allows releasing them asynchronously.
 	// See `//pkg/pinring`.
 	PinRing *pinring.PinRing
+
+	// TSCOffset is an offset to apply to the guest TSC counter (currently KVM only).
+	TSCOffset uint64
 }
 
 // Constructor represents a platform type.
@@ -646,14 +646,6 @@ type Constructor interface {
 	//
 	//	* opts - Platform customization bits.
 	New(opts Options) (Platform, error)
-
-	// OpenDevice opens the path to the device used by the platform.
-	// Passing in an empty string will use the default path for the device,
-	// e.g. "/dev/kvm" for the KVM platform.
-	OpenDevice(devicePath string) (*fd.FD, error)
-
-	// Requirements returns platform specific requirements.
-	Requirements() Requirements
 
 	// PrecompiledSeccompInfo returns a list of `SeccompInfo`s that is
 	// useful to precompile into the Sentry.

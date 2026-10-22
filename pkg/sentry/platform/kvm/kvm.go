@@ -77,19 +77,6 @@ var (
 	globalErr  error
 )
 
-// OpenDevice opens the KVM device and returns the File.
-// If the devicePath is empty, it will default to /dev/kvm.
-func OpenDevice(devicePath string) (*fd.FD, error) {
-	if devicePath == "" {
-		devicePath = "/dev/kvm"
-	}
-	f, err := fd.Open(devicePath, unix.O_RDWR, 0)
-	if err != nil {
-		return nil, fmt.Errorf("error opening KVM device file (%s): %v", devicePath, err)
-	}
-	return f, nil
-}
-
 // New returns a new KVM-based implementation of the platform interface.
 func New(deviceFile *fd.FD, config Config) (*KVM, error) {
 	if hostPageSize := unix.Getpagesize(); hostPageSize != hostarch.PageSize {
@@ -234,6 +221,11 @@ func (k *KVM) NewContext(pkgcontext.Context) platform.Context {
 	return c
 }
 
+// TSCOffset implements platform.TSCAdjustablePlatform.
+func (k *KVM) TSCOffset() uint64 {
+	return k.machine.tscOffset
+}
+
 type constructor struct{}
 
 func (*constructor) New(opts platform.Options) (platform.Platform, error) {
@@ -243,16 +235,8 @@ func (*constructor) New(opts platform.Options) (platform.Platform, error) {
 		UseCPUNums:       opts.UseCPUNums,
 		StartupTimer:     opts.StartupTimer,
 		PinRing:          opts.PinRing,
+		TSCOffset:        opts.TSCOffset,
 	})
-}
-
-func (*constructor) OpenDevice(devicePath string) (*fd.FD, error) {
-	return OpenDevice(devicePath)
-}
-
-// Flags implements platform.Constructor.Flags().
-func (*constructor) Requirements() platform.Requirements {
-	return platform.Requirements{}
 }
 
 func init() {

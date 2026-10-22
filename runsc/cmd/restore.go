@@ -143,16 +143,17 @@ func (r *Restore) Execute(_ context.Context, f *flag.FlagSet, args ...any) subco
 	defer cu.Clean()
 
 	runArgs := container.Args{
-		ID:                 id,
-		Spec:               nil,
-		BundleDir:          bundleDir,
-		ConsoleSocket:      r.consoleSocket,
-		PIDFile:            r.pidFile,
-		UserLog:            r.userLog,
-		Attached:           !r.detach,
-		FSRestoreImagePath: r.fsRestoreImagePath,
-		FSRestoreDirect:    r.fsRestoreDirect || r.direct,
-		CheckpointDirPath:  r.imagePath,
+		ID:                  id,
+		Spec:                nil,
+		BundleDir:           bundleDir,
+		ConsoleSocket:       r.consoleSocket,
+		PIDFile:             r.pidFile,
+		UserLog:             r.userLog,
+		Attached:            !r.detach,
+		FSRestoreImagePaths: []string(r.fsRestoreImagePaths),
+		FSRestoreDirect:     r.fsRestoreDirect || r.direct,
+		CheckpointDirPath:   r.imagePath,
+		NoRootContainer:     r.noRootContainer,
 	}
 
 	log.Debugf("Restore container, cid: %s, rootDir: %q", id, conf.RootDir)
@@ -166,7 +167,7 @@ func (r *Restore) Execute(_ context.Context, f *flag.FlagSet, args ...any) subco
 
 		// Read the spec from the bundle directory.
 		if r.spec == nil {
-			if r.spec, err = specutils.ReadSpec(bundleDir, specutils.SpecOpts{Conf: conf}); err != nil {
+			if r.spec, err = specutils.ReadSpec(bundleDir, specutils.SpecOpts{Conf: conf, NoRootContainer: r.noRootContainer}); err != nil {
 				return util.Errorf("reading spec: %v", err)
 			}
 		}
@@ -204,7 +205,7 @@ func (r *Restore) Execute(_ context.Context, f *flag.FlagSet, args ...any) subco
 	// If we allocate a terminal, forward signals to the sandbox process.
 	// Otherwise, Ctrl+C will terminate this process and its children,
 	// including the terminal.
-	if c.Spec.Process.Terminal {
+	if c.Spec.Process != nil && c.Spec.Process.Terminal {
 		stopForwarding := c.ForwardSignals(0, true /* fgProcess */)
 		defer stopForwarding()
 	}

@@ -43,15 +43,14 @@ import (
 	"gvisor.dev/gvisor/pkg/cleanup"
 	"gvisor.dev/gvisor/pkg/hostos"
 	"gvisor.dev/gvisor/pkg/log"
-	"gvisor.dev/gvisor/pkg/sentry/control"
+	"gvisor.dev/gvisor/pkg/sentry/control/controlapi"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/erofs"
-	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
-	"gvisor.dev/gvisor/pkg/sentry/platform"
+	"gvisor.dev/gvisor/pkg/sentry/platform/platformdesc"
 	"gvisor.dev/gvisor/pkg/state/statefile"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/test/testutil"
-	"gvisor.dev/gvisor/runsc/boot"
+	"gvisor.dev/gvisor/runsc/boot/sentryapi"
 	"gvisor.dev/gvisor/runsc/cgroup"
 	"gvisor.dev/gvisor/runsc/config"
 	"gvisor.dev/gvisor/runsc/flag"
@@ -75,7 +74,7 @@ func TestMain(m *testing.M) {
 }
 
 func execute(conf *config.Config, cont *Container, name string, arg ...string) (unix.WaitStatus, error) {
-	args := &control.ExecArgs{
+	args := &controlapi.ExecArgs{
 		Filename: name,
 		Argv:     append([]string{name}, arg...),
 	}
@@ -96,10 +95,10 @@ func executeCombinedOutputWithStatus(conf *config.Config, cont *Container, execF
 	if execFile != nil {
 		name = ""
 	}
-	args := &control.ExecArgs{
+	args := &controlapi.ExecArgs{
 		Filename: name,
 		Argv:     append([]string{name}, arg...),
-		FilePayload: control.NewFilePayload(map[int]*os.File{
+		FilePayload: controlapi.NewFilePayload(map[int]*os.File{
 			0: os.Stdin, 1: w, 2: w,
 		}, execFile),
 	}
@@ -134,7 +133,7 @@ func executeCombinedOutput(conf *config.Config, cont *Container, execFile *os.Fi
 }
 
 // executeSync synchronously executes a new process.
-func (c *Container) executeSync(conf *config.Config, args *control.ExecArgs) (unix.WaitStatus, error) {
+func (c *Container) executeSync(conf *config.Config, args *controlapi.ExecArgs) (unix.WaitStatus, error) {
 	pid, err := c.Execute(conf, args)
 	if err != nil {
 		return 0, fmt.Errorf("error executing: %v", err)
@@ -147,7 +146,7 @@ func (c *Container) executeSync(conf *config.Config, args *control.ExecArgs) (un
 }
 
 // waitForProcessList waits for the given process list to show up in the container.
-func waitForProcessList(cont *Container, want []*control.Process) error {
+func waitForProcessList(cont *Container, want []*controlapi.Process) error {
 	cb := func() error {
 		got, err := cont.Processes()
 		if err != nil {
@@ -164,7 +163,7 @@ func waitForProcessList(cont *Container, want []*control.Process) error {
 }
 
 // waitForProcess waits for the given process to show up in the container.
-func waitForProcess(cont *Container, want *control.Process) error {
+func waitForProcess(cont *Container, want *controlapi.Process) error {
 	cb := func() error {
 		gots, err := cont.Processes()
 		if err != nil {
@@ -203,9 +202,9 @@ func waitForProcessCount(cont *Container, want int) error {
 // processes and returns them. The same PIDs must be observed in two
 // consecutive poll samples: a single sample can count a transient task in
 // place of a process that has not been forked yet.
-func waitForStableProcessList(cont *Container, want int) ([]*control.Process, error) {
-	var prev []kernel.ThreadID
-	var procs []*control.Process
+func waitForStableProcessList(cont *Container, want int) ([]*controlapi.Process, error) {
+	var prev []int32
+	var procs []*controlapi.Process
 	cb := func() error {
 		var err error
 		procs, err = cont.Processes()
@@ -214,7 +213,7 @@ func waitForStableProcessList(cont *Container, want int) ([]*control.Process, er
 			return &backoff.PermanentError{Err: err}
 		}
 		// Processes() returns the list sorted by PID.
-		pids := make([]kernel.ThreadID, 0, len(procs))
+		pids := make([]int32, 0, len(procs))
 		for _, p := range procs {
 			pids = append(pids, p.PID)
 		}
@@ -244,7 +243,7 @@ func blockUntilWaitable(pid int) error {
 }
 
 // execPS executes `ps` inside the container and return the processes.
-func execPS(conf *config.Config, c *Container) ([]*control.Process, error) {
+func execPS(conf *config.Config, c *Container) ([]*controlapi.Process, error) {
 	out, err := executeCombinedOutput(conf, c, nil, "/bin/ps", "-e")
 	if err != nil {
 		return nil, err
@@ -253,7 +252,7 @@ func execPS(conf *config.Config, c *Container) ([]*control.Process, error) {
 	if len(lines) < 1 {
 		return nil, fmt.Errorf("missing header: %q", lines)
 	}
-	procs := make([]*control.Process, 0, len(lines)-1)
+	procs := make([]*controlapi.Process, 0, len(lines)-1)
 	for _, line := range lines[1:] {
 		if len(line) == 0 {
 			continue
@@ -268,8 +267,8 @@ func execPS(conf *config.Config, c *Container) ([]*control.Process, error) {
 		}
 		cmd := fields[3]
 		// Fill only the fields we need thus far.
-		procs = append(procs, &control.Process{
-			PID: kernel.ThreadID(pid),
+		procs = append(procs, &controlapi.Process{
+			PID: int32(pid),
 			Cmd: cmd,
 		})
 	}
@@ -279,7 +278,7 @@ func execPS(conf *config.Config, c *Container) ([]*control.Process, error) {
 // procListsEqual is used to check whether 2 Process lists are equal. Fields
 // set to -1 in wants are ignored. Timestamp and threads fields are always
 // ignored.
-func procListsEqual(gots, wants []*control.Process) bool {
+func procListsEqual(gots, wants []*controlapi.Process) bool {
 	if len(gots) != len(wants) {
 		return false
 	}
@@ -291,7 +290,7 @@ func procListsEqual(gots, wants []*control.Process) bool {
 	return true
 }
 
-func procEqual(got, want *control.Process) bool {
+func procEqual(got, want *controlapi.Process) bool {
 	if want.UID != math.MaxUint32 && want.UID != got.UID {
 		return false
 	}
@@ -314,12 +313,12 @@ func procEqual(got, want *control.Process) bool {
 }
 
 type processBuilder struct {
-	process control.Process
+	process controlapi.Process
 }
 
 func newProcessBuilder() *processBuilder {
 	return &processBuilder{
-		process: control.Process{
+		process: controlapi.Process{
 			UID:  math.MaxUint32,
 			PID:  -1,
 			PPID: -1,
@@ -333,17 +332,17 @@ func (p *processBuilder) Cmd(cmd string) *processBuilder {
 	return p
 }
 
-func (p *processBuilder) PID(pid kernel.ThreadID) *processBuilder {
+func (p *processBuilder) PID(pid int32) *processBuilder {
 	p.process.PID = pid
 	return p
 }
 
-func (p *processBuilder) PPID(ppid kernel.ThreadID) *processBuilder {
+func (p *processBuilder) PPID(ppid int32) *processBuilder {
 	p.process.PPID = ppid
 	return p
 }
 
-func (p *processBuilder) PGID(pgid kernel.ThreadID) *processBuilder {
+func (p *processBuilder) PGID(pgid int32) *processBuilder {
 	p.process.PGID = pgid
 	return p
 }
@@ -353,11 +352,11 @@ func (p *processBuilder) UID(uid auth.KUID) *processBuilder {
 	return p
 }
 
-func (p *processBuilder) Process() *control.Process {
+func (p *processBuilder) Process() *controlapi.Process {
 	return &p.process
 }
 
-func procListToString(pl []*control.Process) string {
+func procListToString(pl []*controlapi.Process) string {
 	strs := make([]string, 0, len(pl))
 	for _, p := range pl {
 		strs = append(strs, fmt.Sprintf("%+v", p))
@@ -478,7 +477,7 @@ var platforms = flag.String("test_platforms", os.Getenv("TEST_PLATFORMS"), "Plat
 func configs(t *testing.T, noOverlay bool) map[string]*config.Config {
 	var ps []string
 	if *platforms == "" {
-		ps = platform.List()
+		ps = platformdesc.List()
 	} else {
 		ps = strings.Split(*platforms, ",")
 	}
@@ -608,7 +607,7 @@ func TestLifecycle(t *testing.T) {
 			defer cleanup()
 
 			// expectedPL lists the expected process state of the container.
-			expectedPL := []*control.Process{
+			expectedPL := []*controlapi.Process{
 				newProcessBuilder().Cmd("sleep").Process(),
 			}
 			// Create the container.
@@ -914,7 +913,7 @@ func TestExec(t *testing.T) {
 			}
 
 			// Wait until sleep is running to ensure the symlink was created.
-			expectedPL := []*control.Process{
+			expectedPL := []*controlapi.Process{
 				newProcessBuilder().Cmd("sh").Process(),
 				newProcessBuilder().Cmd("sleep").Process(),
 			}
@@ -924,71 +923,71 @@ func TestExec(t *testing.T) {
 
 			for _, tc := range []struct {
 				name string
-				args control.ExecArgs
+				args controlapi.ExecArgs
 			}{
 				{
 					name: "complete",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Filename: "/bin/true",
 						Argv:     []string{"/bin/true"},
 					},
 				},
 				{
 					name: "filename",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Filename: "/bin/true",
 					},
 				},
 				{
 					name: "argv",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Argv: []string{"/bin/true"},
 					},
 				},
 				{
 					name: "filename resolution",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Filename: "true",
 						Envv:     []string{"PATH=/bin"},
 					},
 				},
 				{
 					name: "argv resolution",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Argv: []string{"true"},
 						Envv: []string{"PATH=/bin"},
 					},
 				},
 				{
 					name: "argv symlink",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Argv: []string{filepath.Join(dir, "symlink")},
 					},
 				},
 				{
 					name: "working dir",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Argv:             []string{"/bin/sh", "-c", `if [[ "${PWD}" != "/tmp" ]]; then exit 1; fi`},
 						WorkingDirectory: "/tmp",
 					},
 				},
 				{
 					name: "user",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Argv: []string{"/bin/sh", "-c", `if [[ "$(id -u)" != "343" ]]; then exit 1; fi`},
 						KUID: 343,
 					},
 				},
 				{
 					name: "group",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Argv: []string{"/bin/sh", "-c", `if [[ "$(id -g)" != "343" ]]; then exit 1; fi`},
 						KGID: 343,
 					},
 				},
 				{
 					name: "env",
-					args: control.ExecArgs{
+					args: controlapi.ExecArgs{
 						Argv: []string{"/bin/sh", "-c", `if [[ "${FOO}" != "123" ]]; then exit 1; fi`},
 						Envv: []string{"FOO=123"},
 					},
@@ -1014,9 +1013,9 @@ func TestExec(t *testing.T) {
 				}
 				defer unix.Close(fds[0])
 
-				_, err = cont.executeSync(conf, &control.ExecArgs{
+				_, err = cont.executeSync(conf, &controlapi.ExecArgs{
 					Argv: []string{"/nonexist"},
-					FilePayload: control.NewFilePayload(map[int]*os.File{
+					FilePayload: controlapi.NewFilePayload(map[int]*os.File{
 						0: os.NewFile(uintptr(fds[1]), "sock"),
 					}, nil),
 				})
@@ -1058,7 +1057,7 @@ func TestExecProcList(t *testing.T) {
 				t.Fatalf("error starting container: %v", err)
 			}
 
-			execArgs := &control.ExecArgs{
+			execArgs := &controlapi.ExecArgs{
 				Filename:         "/bin/sleep",
 				Argv:             []string{"/bin/sleep", "5"},
 				WorkingDirectory: "/",
@@ -1073,9 +1072,9 @@ func TestExecProcList(t *testing.T) {
 			}
 
 			// expectedPL lists the expected process state of the container.
-			expectedPL := []*control.Process{
+			expectedPL := []*controlapi.Process{
 				newProcessBuilder().PID(1).PPID(0).Cmd("sleep").UID(0).Process(),
-				newProcessBuilder().PID(kernel.ThreadID(pid2)).PPID(0).Cmd("sleep").UID(uid).Process(),
+				newProcessBuilder().PID(int32(pid2)).PPID(0).Cmd("sleep").UID(uid).Process(),
 			}
 			if err := waitForProcessList(cont, expectedPL); err != nil {
 				t.Fatalf("error waiting for processes: %v", err)
@@ -1123,7 +1122,7 @@ func TestKillPid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("timed out waiting for processes to start: %v", err)
 			}
-			t.Logf("current process list:\n%v", control.ProcessListToTable(procs))
+			t.Logf("current process list:\n%v", controlapi.ProcessListToTable(procs))
 
 			// Kill the child process with the largest PID. Processes are
 			// created in a chain, so this is the deepest child.
@@ -1156,7 +1155,7 @@ func TestKillPid(t *testing.T) {
 				return nil
 			}, pollTimeout); err != nil {
 				procs, procsErr := cont.Processes()
-				t.Fatalf("error waiting for process %d to be killed: %v; current processes (err: %v):\n%v", pid, err, procsErr, control.ProcessListToTable(procs))
+				t.Fatalf("error waiting for process %d to be killed: %v; current processes (err: %v):\n%v", pid, err, procsErr, controlapi.ProcessListToTable(procs))
 			}
 		})
 	}
@@ -1253,10 +1252,14 @@ func TestSignalProcessGroup(t *testing.T) {
 // respond to the Sandbox.Wait RPC, in which case we fall back to the sandbox
 // process's own exit status, which reports the signal as `128+SIGKILL`.
 func killedBySIGKILL(ws unix.WaitStatus) bool {
+	return killedBySignal(ws, unix.SIGKILL)
+}
+
+func killedBySignal(ws unix.WaitStatus, sig unix.Signal) bool {
 	if ws.Signaled() {
-		return ws.Signal() == unix.SIGKILL
+		return ws.Signal() == sig
 	}
-	return ws.ExitStatus() == 128+int(unix.SIGKILL)
+	return ws.ExitStatus() == 128+int(sig)
 }
 
 // TestSignalUnkillablePolicy verifies Linux SIGNAL_UNKILLABLE semantics for PID 1:
@@ -1594,11 +1597,6 @@ func TestNoRootContainerRejectsRootArgs(t *testing.T) {
 			wantErr: "ConsoleSocket cannot be set with NoRootContainer",
 		},
 		{
-			name:    "fs restore image path",
-			args:    Args{FSRestoreImagePath: "/tmp/image"},
-			wantErr: "FSRestoreImagePath cannot be set with NoRootContainer",
-		},
-		{
 			name:    "pass files",
 			args:    Args{PassFiles: map[int]*os.File{3: os.Stdin}},
 			wantErr: "PassFiles and ExecFile cannot be set with NoRootContainer",
@@ -1644,6 +1642,64 @@ func TestNoRootContainerRejectsRootArgs(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("New() error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestSignalUnkillablePolicyFaultKillsInit verifies that a fault in PID 1
+// terminates it under SignalUnkillableLinux. The sentry forces the SIGSEGV,
+// which ends the protection of the init process, analogous to Linux's
+// kernel/signal.c:force_sig_info_to_task().
+func TestSignalUnkillablePolicyFaultKillsInit(t *testing.T) {
+	app, err := testutil.FindFile("test/cmd/test_app/test_app")
+	if err != nil {
+		t.Fatal("error finding test_app:", err)
+	}
+	for name, conf := range configs(t, true /* noOverlay */) {
+		t.Run(name, func(t *testing.T) {
+			testConf := *conf
+			testConf.SignalUnkillablePolicy = config.SignalUnkillableLinux
+
+			spec := testutil.NewSpecWithArgs(app, "segfault")
+			_, bundleDir, cleanup, err := testutil.SetupContainer(spec, &testConf)
+			if err != nil {
+				t.Fatalf("error setting up container: %v", err)
+			}
+			defer cleanup()
+
+			cont, err := New(&testConf, Args{
+				ID:        testutil.RandomContainerID(),
+				Spec:      spec,
+				BundleDir: bundleDir,
+			})
+			if err != nil {
+				t.Fatalf("error creating container: %v", err)
+			}
+			defer cont.Destroy()
+			if err := cont.Start(&testConf); err != nil {
+				t.Fatalf("error starting container: %v", err)
+			}
+
+			type waitResult struct {
+				ws  unix.WaitStatus
+				err error
+			}
+			done := make(chan waitResult, 1)
+			go func() {
+				ws, err := cont.Wait()
+				done <- waitResult{ws, err}
+			}()
+			select {
+			case res := <-done:
+				if res.err != nil {
+					t.Fatalf("cont.Wait: %v", res.err)
+				}
+				if !killedBySignal(res.ws, unix.SIGSEGV) {
+					t.Fatalf("expected container killed by SIGSEGV, got %v (status=%d)", res.ws, res.ws.ExitStatus())
+				}
+			case <-time.After(pollTimeout):
+				t.Fatalf("PID 1 is still running %v after faulting", pollTimeout)
 			}
 		})
 	}
@@ -2051,7 +2107,7 @@ func TestCapabilities(t *testing.T) {
 			}
 
 			// expectedPL lists the expected process state of the container.
-			expectedPL := []*control.Process{
+			expectedPL := []*controlapi.Process{
 				newProcessBuilder().Cmd("sleep").Process(),
 			}
 			if err := waitForProcessList(cont, expectedPL); err != nil {
@@ -2072,7 +2128,7 @@ func TestCapabilities(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			execArgs := &control.ExecArgs{
+			execArgs := &controlapi.ExecArgs{
 				Filename:         exePath,
 				Argv:             []string{exePath},
 				WorkingDirectory: "/",
@@ -2993,6 +3049,11 @@ func TestUIDMap(t *testing.T) {
 			testFile := path.Join(testDir, "testfile")
 
 			spec := testutil.NewSpecWithArgs("touch", "/tmp/testfile")
+			// This test supplies its own writable /tmp. Remove the helper's
+			// temporary-directory bind, which /tmp would hide when TmpDir is below it.
+			spec.Mounts = slices.DeleteFunc(spec.Mounts, func(m specs.Mount) bool {
+				return m.Destination == testutil.TmpDir()
+			})
 			uid := os.Getuid()
 			gid := os.Getgid()
 			spec.Linux = &specs.Linux{
@@ -3862,7 +3923,7 @@ func TestPGIDField(t *testing.T) {
 		t.Fatalf("error starting container: %v", err)
 	}
 
-	expectedPL := []*control.Process{
+	expectedPL := []*controlapi.Process{
 		newProcessBuilder().PID(1).PPID(0).PGID(1).Cmd("sleep").Process(),
 	}
 	if err := waitForProcessList(c, expectedPL); err != nil {
@@ -4521,9 +4582,9 @@ func TestFDPassingExec(t *testing.T) {
 
 	// Prepare executing a command in the running container.
 	cmd := fmt.Sprintf("cat /proc/self/fd/%d > /proc/self/fd/%d", int(guestRead.Fd()), int(guestWrite.Fd()))
-	execArgs := &control.ExecArgs{
+	execArgs := &controlapi.ExecArgs{
 		Argv: []string{"/bin/bash", "-c", cmd},
-		FilePayload: control.NewFilePayload(map[int]*os.File{
+		FilePayload: controlapi.NewFilePayload(map[int]*os.File{
 			int(guestRead.Fd()):  guestRead,
 			int(guestWrite.Fd()): guestWrite,
 		}, nil),
@@ -4797,6 +4858,8 @@ find $dir -type l -o -type f | sort | xargs cat | md5sum`), 0755); err != nil {
 			name:    "image4",
 			options: "-E force-inode-compact -E noinline_data",
 		},
+		{name: "chunk-blockmap", options: "--chunksize=8192 -E force-inode-blockmap,force-inode-compact"},
+		{name: "chunk-indexes", options: "--chunksize=8192 -E force-chunk-indexes,force-inode-extended"},
 	}
 
 	var resultImages []erofsImageInfo
@@ -4945,8 +5008,8 @@ func TestMountEROFSConfig(t *testing.T) {
 }
 
 // createRootfsEROFS creates a rootfs directory and an EROFS rootfs image in
-// the directory dir.
-func createRootfsEROFS(dir string) (string, string, error) {
+// the directory dir, passing options to mkfs.erofs.
+func createRootfsEROFS(dir string, options ...string) (string, string, error) {
 	// Create a rootfs directory with busybox in root.
 	rootfsDir := filepath.Join(dir, "rootfs")
 	if err := os.Mkdir(rootfsDir, 0755); err != nil {
@@ -4971,7 +5034,7 @@ func createRootfsEROFS(dir string) (string, string, error) {
 
 	// Build the EROFS rootfs image.
 	rootfsImage := filepath.Join(dir, "rootfs.img")
-	if err := createImageEROFS(rootfsImage, rootfsDir, "-E noinline_data"); err != nil {
+	if err := createImageEROFS(rootfsImage, rootfsDir, append([]string{"-E noinline_data"}, options...)...); err != nil {
 		return "", "", fmt.Errorf("error creating EROFS image: %v", err)
 	}
 
@@ -5001,11 +5064,11 @@ func TestRootfsEROFS(t *testing.T) {
 	if spec.Annotations == nil {
 		spec.Annotations = make(map[string]string)
 	}
-	spec.Annotations[boot.RootfsPrefix+"type"] = erofs.Name
-	spec.Annotations[boot.RootfsPrefix+"source"] = rootfsImage
+	spec.Annotations[sentryapi.RootfsPrefix+"type"] = erofs.Name
+	spec.Annotations[sentryapi.RootfsPrefix+"source"] = rootfsImage
 	// Disable the overlay, as we want to be sure that rootfs will always be
 	// shown as EROFS in mountinfo.
-	spec.Annotations[boot.RootfsPrefix+"overlay"] = config.NoOverlay.String()
+	spec.Annotations[sentryapi.RootfsPrefix+"overlay"] = config.NoOverlay.String()
 
 	conf := testutil.TestConfig(t)
 	mountDir, err := os.MkdirTemp(testutil.TmpDir(), "mount_dir")
@@ -5526,7 +5589,7 @@ func snapshotRootfsUpperLayer(conf *config.Config, spec *specs.Spec) (string, er
 		return "", fmt.Errorf("error starting container: %v", err)
 	}
 	// Exec the command in the container.
-	execArgs := &control.ExecArgs{
+	execArgs := &controlapi.ExecArgs{
 		Filename: app,
 		Argv:     []string{app, "fsTreeCreate", "--depth=3", "--file-per-level=2", "--file-size=1470", "--create-symlink", "--add-empty-files"},
 	}
@@ -6038,7 +6101,7 @@ func TestSaveRestoreExecReconfigure(t *testing.T) {
 	checkpointOpts := sandbox.CheckpointOpts{
 		Resume:                 true,
 		SaveRestoreExecArgv:    hookPath,
-		SaveRestoreExecTimeout: control.DefaultSaveRestoreExecTimeout,
+		SaveRestoreExecTimeout: controlapi.DefaultSaveRestoreExecTimeout,
 	}
 	imageDir := func(name string) string {
 		path := filepath.Join(dir, name)
@@ -6048,12 +6111,17 @@ func TestSaveRestoreExecReconfigure(t *testing.T) {
 		return path
 	}
 	wantHookLog := func(want string) {
-		got, err := os.ReadFile(hookLog)
-		if err != nil {
-			t.Fatalf("error reading hook log: %v", err)
-		}
-		if string(got) != want {
-			t.Errorf("save/restore binary invocations: got %q, want %q", got, want)
+		if err := testutil.Poll(func() error {
+			got, err := os.ReadFile(hookLog)
+			if err != nil {
+				return err
+			}
+			if string(got) != want {
+				return fmt.Errorf("save/restore binary invocations: got %q, want %q", got, want)
+			}
+			return nil
+		}, 30*time.Second); err != nil {
+			t.Fatal(err)
 		}
 	}
 
@@ -6085,8 +6153,10 @@ func TestSaveRestoreExecReconfigure(t *testing.T) {
 		if err := cont.Checkpoint(conf, lastImage, checkpointOpts); err != nil {
 			t.Fatalf("checkpoint %d failed: %v", i+1, err)
 		}
+		// Wait for the resume hook before starting another checkpoint so that
+		// the save and resume hooks cannot run concurrently.
+		wantHookLog(strings.Repeat("save\nresume\n", i+1))
 	}
-	wantHookLog("save\nresume\nsave\nresume\n")
 	cont.Destroy()
 
 	// Restore the last checkpoint and checkpoint it once more. The restored

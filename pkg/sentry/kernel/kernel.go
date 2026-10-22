@@ -846,10 +846,13 @@ func (k *Kernel) saveToLocked(ctx context.Context, stateFile, pagesMetadata io.W
 	}
 
 	mfsToSaveActual := mfsToSave
-	var matchCtx *fsCheckpointMatchContext
+	var matchCtxs []*fsCheckpointMatchContext
 	if fsOpts != nil {
-		matchCtx = k.newFSCheckpointMatchContext(ctx, fsOpts.Paths)
-		mfsToSaveActual = filterMFsToSave(mfsToSave, matchCtx)
+		matchCtxs = make([]*fsCheckpointMatchContext, len(fsOpts.Bundles))
+		for i := range fsOpts.Bundles {
+			matchCtxs[i] = k.newFSCheckpointMatchContext(ctx, fsOpts.Bundles[i].Paths)
+		}
+		mfsToSaveActual = filterMFsToSave(mfsToSave, matchCtxs)
 	}
 
 	parallelMFSave := pagesMetadata != nil
@@ -905,8 +908,10 @@ func (k *Kernel) saveToLocked(ctx context.Context, stateFile, pagesMetadata io.W
 
 	if fsOpts != nil {
 		fsSaveStart := time.Now()
-		if err := k.fsSaveLocked(ctx, fsOpts, mfsToSave, matchCtx); err != nil {
-			return fmt.Errorf("failed to save split filesystem: %w", err)
+		for i := range fsOpts.Bundles {
+			if err := k.fsSaveLocked(ctx, &fsOpts.Bundles[i], fsOpts.RunscVersion, mfsToSave, matchCtxs[i]); err != nil {
+				return fmt.Errorf("failed to save split filesystem bundle %d: %w", i, err)
+			}
 		}
 		log.Infof("Split filesystem save took [%s].", time.Since(fsSaveStart))
 		fsCleanup.Release()
@@ -1918,18 +1923,6 @@ func (k *Kernel) SendExternalSignal(info *linux.SignalInfo, context string) {
 	k.sendExternalSignal(info, context)
 }
 
-// maybeForceInitSignal marks external signals to the root-namespace init as
-// privileged (SI_KERNEL) so host/control-plane signals take effect under
-// SIGNAL_UNKILLABLE protection. The input info is not mutated.
-func (k *Kernel) maybeForceInitSignal(tg *ThreadGroup, info *linux.SignalInfo) *linux.SignalInfo {
-	if k.signalUnkillable == SignalUnkillableNone || tg != k.globalInit || info.Code != linux.SI_USER {
-		return info
-	}
-	forced := *info
-	forced.Code = linux.SI_KERNEL
-	return &forced
-}
-
 // SendExternalSignalThreadGroup injects a signal into an specific ThreadGroup.
 //
 // This function doesn't skip signals like SendExternalSignal does.
@@ -1940,7 +1933,7 @@ func (k *Kernel) maybeForceInitSignal(tg *ThreadGroup, info *linux.SignalInfo) *
 func (k *Kernel) SendExternalSignalThreadGroup(tg *ThreadGroup, info *linux.SignalInfo) error {
 	k.extMu.Lock()
 	defer k.extMu.Unlock()
-	return tg.SendSignal(k.maybeForceInitSignal(tg, info))
+	return tg.SendForcedSignal(info)
 }
 
 // SendExternalSignalProcessGroup sends a signal to all ThreadGroups in the
@@ -1963,7 +1956,7 @@ func (k *Kernel) SendExternalSignalProcessGroup(pg *ProcessGroup, info *linux.Si
 		if tg.ProcessGroup() != pg {
 			continue
 		}
-		if err := tg.SendSignal(k.maybeForceInitSignal(tg, info)); err != nil && firstErr == nil {
+		if err := tg.SendForcedSignal(info); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -1982,8 +1975,8 @@ func (k *Kernel) SendContainerSignal(cid string, info *linux.SignalInfo) error {
 	for tg := range k.tasks.Root.tgids {
 		if tg.leader.ContainerID() == cid {
 			tg.signalHandlers.mu.Lock()
-			infoCopy := *k.maybeForceInitSignal(tg, info)
-			if err := tg.leader.sendSignalLocked(&infoCopy, true /*group*/); err != nil {
+			infoCopy := *info
+			if err := tg.leader.sendForcedSignalLocked(&infoCopy, true /*group*/); err != nil {
 				lastErr = err
 			}
 			tg.signalHandlers.mu.Unlock()
@@ -2697,11 +2690,18 @@ func (k *Kernel) ContainerName(cid string) string {
 	return k.containerNames[cid]
 }
 
-func filterMFsToSave(mfsToSave map[checkpoint.ResourceID]*pgalloc.MemoryFile, matchCtx *fsCheckpointMatchContext) map[checkpoint.ResourceID]*pgalloc.MemoryFile {
+func filterMFsToSave(mfsToSave map[checkpoint.ResourceID]*pgalloc.MemoryFile, matchCtxs []*fsCheckpointMatchContext) map[checkpoint.ResourceID]*pgalloc.MemoryFile {
 	mfsToSaveActual := make(map[checkpoint.ResourceID]*pgalloc.MemoryFile)
 	for id, mf := range mfsToSave {
-		_, isTmpfs := matchCtx.tmpfsResourceIDs[id]
-		if !matchesPaths(id, matchCtx.pathsMap, isTmpfs) {
+		matched := false
+		for _, matchCtx := range matchCtxs {
+			_, isTmpfs := matchCtx.tmpfsResourceIDs[id]
+			if matchesPaths(id, matchCtx.pathsMap, isTmpfs) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			mfsToSaveActual[id] = mf
 		}
 	}

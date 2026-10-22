@@ -75,6 +75,9 @@ func (fs *filesystem) ReadInPages(ctx context.Context, fd *regularFileFD, off ui
 		if err != nil {
 			return nil, 0, err
 		}
+		if err := res.Error(); err != nil {
+			return nil, 0, err
+		}
 
 		// Not enough bytes in response,
 		// either we reached EOF,
@@ -141,8 +144,8 @@ func (fs *filesystem) Write(ctx context.Context, fd *regularFileFD, offset int64
 	if maxWrite > fs.conn.maxWrite {
 		maxWrite = fs.conn.maxWrite
 	}
-	if !fs.conn.bigWrites && maxWrite > hostarch.PageSize {
-		maxWrite = hostarch.PageSize
+	if pageSize := uint32(hostarch.PageSize); !fs.conn.bigWrites && maxWrite > pageSize {
+		maxWrite = pageSize
 	}
 
 	// Reuse the same struct for unmarshalling to avoid unnecessary memory allocation.

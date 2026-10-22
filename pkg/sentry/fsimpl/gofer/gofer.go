@@ -1604,8 +1604,12 @@ func (d *dentry) checkXattrPermissions(creds *auth.Credentials, name string, ats
 	mode := linux.FileMode(d.inode.mode.RacyLoad())
 	kuid := auth.KUID(d.inode.uid.RacyLoad())
 	kgid := auth.KGID(d.inode.gid.RacyLoad())
-	if err := vfs.GenericCheckPermissions(creds, ats, mode, nil, kuid, kgid); err != nil {
-		return err
+	// Linux only skips the read permission check for reads of security.*,
+	// system.*, and trusted.* xattrs, see fs/xattr.c:xattr_permission().
+	if ats.MayWrite() || vfs.XattrReadNeedsFilePermission(name) {
+		if err := vfs.GenericCheckPermissions(creds, ats, mode, nil, kuid, kgid); err != nil {
+			return err
+		}
 	}
 	return vfs.CheckXattrPermissions(creds, ats, mode, kuid, name)
 }
@@ -1800,10 +1804,23 @@ func (d *dentry) checkCachingLocked(ctx context.Context, renameMuWriteLocked boo
 				return
 			}
 		}
+		var ds *[]*dentry
 		if d.isDeleted() {
-			d.inode.watches.HandleDeletion(ctx)
+			// HandleDeletion sends IN_DELETE_SELF, which removes one-shot
+			// watches and calls OnZeroWatches on their targets while fs.renameMu
+			// is locked for writing. Hand it a list so OnZeroWatches does not
+			// re-enter checkCachingLocked. d.inode.watches is shared by all hard
+			// links to the inode, so the list may contain dentries other than d.
+			d.inode.watches.HandleDeletion(withCheckCachingList(ctx, &ds))
 		}
 		d.destroyLocked(ctx) // +checklocksforce: renameMu must be acquired at this point.
+		if ds != nil {
+			// d is destroyed now, so checkCachingLocked is a no-op for it.
+			for _, td := range *ds {
+				td.checkCachingLocked(ctx, true /* renameMuWriteLocked */) // +checklocksforce: renameMu must be acquired at this point.
+			}
+			putDentrySlice(ds)
+		}
 		return
 	}
 	if d.vfsd.IsEvictable() {

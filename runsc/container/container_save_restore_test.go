@@ -30,13 +30,12 @@ import (
 	"golang.org/x/sys/unix"
 
 	"gvisor.dev/gvisor/pkg/cleanup"
-	"gvisor.dev/gvisor/pkg/sentry/control"
+	"gvisor.dev/gvisor/pkg/sentry/control/controlapi"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/erofs"
-	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/state/checkpointfiles"
 	"gvisor.dev/gvisor/pkg/state/statefile"
 	"gvisor.dev/gvisor/pkg/test/testutil"
-	"gvisor.dev/gvisor/runsc/boot"
+	"gvisor.dev/gvisor/runsc/boot/sentryapi"
 	"gvisor.dev/gvisor/runsc/config"
 	"gvisor.dev/gvisor/runsc/sandbox"
 )
@@ -802,7 +801,7 @@ func TestCheckpointRestoreExecKilled(t *testing.T) {
 		t.Fatalf("error starting container: %v", err)
 	}
 
-	execArgs := &control.ExecArgs{
+	execArgs := &controlapi.ExecArgs{
 		Filename: "/bin/sleep",
 		Argv:     []string{"/bin/sleep", "10000"},
 	}
@@ -824,7 +823,7 @@ func TestCheckpointRestoreExecKilled(t *testing.T) {
 	defer stdioCleanup.Clean()
 
 	fdMap := map[int]*os.File{0: r, 1: w, 2: w}
-	execArgs.FilePayload = control.NewFilePayload(fdMap, nil)
+	execArgs.FilePayload = controlapi.NewFilePayload(fdMap, nil)
 	pid2, err := cont.Execute(conf, execArgs)
 	if err != nil {
 		t.Fatalf("error executing in container: %v", err)
@@ -836,10 +835,10 @@ func TestCheckpointRestoreExecKilled(t *testing.T) {
 		t.Fatalf("exec'd PID cannot be 1")
 	}
 	// Wait until the init process and exec'd processes are present.
-	expectedPL := []*control.Process{
+	expectedPL := []*controlapi.Process{
 		newProcessBuilder().Cmd("sleep").PID(1).Process(),
-		newProcessBuilder().Cmd("sleep").PID(kernel.ThreadID(pid1)).Process(),
-		newProcessBuilder().Cmd("sleep").PID(kernel.ThreadID(pid2)).Process(),
+		newProcessBuilder().Cmd("sleep").PID(int32(pid1)).Process(),
+		newProcessBuilder().Cmd("sleep").PID(int32(pid2)).Process(),
 	}
 	if err := waitForProcessList(cont, expectedPL); err != nil {
 		t.Fatalf("Failed to kill exec'ed process, err: %v", err)
@@ -875,7 +874,7 @@ func TestCheckpointRestoreExecKilled(t *testing.T) {
 
 	// Check that only the init process is present and the exec'ed
 	// processes were killed.
-	expectedPL = []*control.Process{
+	expectedPL = []*controlapi.Process{
 		newProcessBuilder().Cmd("sleep").PID(1).Process(),
 	}
 	if err := waitForProcessList(cont2, expectedPL); err != nil {
@@ -972,38 +971,47 @@ func TestCheckpointRestoreEROFS(t *testing.T) {
 	// Skip this test if mkfs.erofs or busybox are not available.
 	skipIfNotAvailable(t, "mkfs.erofs", "busybox")
 
-	testDir, err := os.MkdirTemp(testutil.TmpDir(), "erofs_checkpoint_restore_test_")
-	if err != nil {
-		t.Fatalf("os.MkdirTemp() failed: %v", err)
-	}
-	defer os.RemoveAll(testDir)
+	for _, tc := range []struct{ name, options string }{
+		{name: "flat"},
+		{name: "chunk-blockmap", options: "--chunksize=8192 -E force-inode-blockmap"},
+		{name: "chunk-indexes", options: "--chunksize=8192 -E force-chunk-indexes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testDir, err := os.MkdirTemp(testutil.TmpDir(), "erofs_checkpoint_restore_test_")
+			if err != nil {
+				t.Fatalf("os.MkdirTemp() failed: %v", err)
+			}
+			defer os.RemoveAll(testDir)
 
-	rootfsDir, rootfsImage, err := createRootfsEROFS(testDir)
-	if err != nil {
-		t.Fatalf("failed to create EROFS rootfs image: %v", err)
-	}
+			rootfsDir, rootfsImage, err := createRootfsEROFS(testDir, tc.options)
+			if err != nil {
+				t.Fatalf("failed to create EROFS rootfs image: %v", err)
+			}
 
-	// Skip overlay because test requires writing to host file.
-	for name, conf := range configs(t, true /* noOverlay */) {
-		t.Run(name, func(t *testing.T) {
-			testCheckpointRestore(t, conf, statefile.CompressionLevelDefault, func(script string) *specs.Spec {
-				spec := testutil.NewSpecWithArgs("/busybox", "sh", "-c", script)
-				spec.Root = &specs.Root{
-					Path:     rootfsDir,
-					Readonly: false,
-				}
-				if spec.Annotations == nil {
-					spec.Annotations = make(map[string]string)
-				}
-				spec.Annotations[boot.RootfsPrefix+"type"] = erofs.Name
-				spec.Annotations[boot.RootfsPrefix+"source"] = rootfsImage
-				// EROFS does not support creating synthetic directories yet, so let's add
-				// a writeable and savable overlay for rootfs, which allows the sentry to
-				// create the mount point for the bind mount of the temporary directory shared
-				// between host and test container.
-				spec.Annotations[boot.RootfsPrefix+"overlay"] = config.MemoryOverlay.String()
-				return spec
-			})
+			// Skip overlay because test requires writing to host file.
+			for name, conf := range configs(t, true /* noOverlay */) {
+				t.Run(name, func(t *testing.T) {
+					testCheckpointRestore(t, conf, statefile.CompressionLevelDefault, func(script string) *specs.Spec {
+						spec := testutil.NewSpecWithArgs("/busybox", "sh", "-c", script)
+						spec.Root = &specs.Root{
+							Path:     rootfsDir,
+							Readonly: false,
+						}
+						if spec.Annotations == nil {
+							spec.Annotations = make(map[string]string)
+						}
+						spec.Annotations[sentryapi.RootfsPrefix+"type"] = erofs.Name
+						spec.Annotations[sentryapi.RootfsPrefix+"source"] = rootfsImage
+						// EROFS does not support creating synthetic directories
+						// yet, so let's add a writeable and savable overlay for
+						// rootfs, which allows the sentry to create the mount
+						// point for the bind mount of the temporary directory
+						// shared between host and test container.
+						spec.Annotations[sentryapi.RootfsPrefix+"overlay"] = config.MemoryOverlay.String()
+						return spec
+					})
+				})
+			}
 		})
 	}
 }
@@ -1580,7 +1588,7 @@ func TestSplitFSCheckpointRestoreOnlyFS(t *testing.T) {
 				bundleDirFresh := setupBundle(t, conf, specFresh)
 
 				contFresh := startContainer(t, conf, specFresh, bundleDirFresh, func(args *Args) {
-					args.FSRestoreImagePath = onlyFSDir
+					args.FSRestoreImagePaths = []string{onlyFSDir}
 				})
 				if err := contFresh.WaitFSRestore(); err != nil {
 					t.Fatalf("error waiting for filesystem restore: %v", err)
@@ -1597,7 +1605,7 @@ func TestSplitFSCheckpointRestoreOnlyFS(t *testing.T) {
 				sentryOnlyDir := copyCheckpointFiles(t, checkpointDir, "sentry-only-dir", sentryCheckpointFiles)
 
 				contRestore := newContainer(t, conf, spec, bundleDir, func(args *Args) {
-					args.FSRestoreImagePath = onlyFSDir
+					args.FSRestoreImagePaths = []string{onlyFSDir}
 				})
 				if err := contRestore.Restore(conf, sentryOnlyDir, false /* direct */, false /* background */, nil /* networkArgs */); err != nil {
 					t.Fatalf("error restoring container with isolated fs checkpoint: %v", err)
@@ -1610,7 +1618,7 @@ func TestSplitFSCheckpointRestoreOnlyFS(t *testing.T) {
 				sentryOnlyDir := copyCheckpointFiles(t, checkpointDir, "sentry-only-dir-explicit", sentryCheckpointFiles)
 
 				contRestore := newContainer(t, conf, spec, bundleDir, func(args *Args) {
-					args.FSRestoreImagePath = filepath.Join(onlyFSDir, tc.wantPrefix)
+					args.FSRestoreImagePaths = []string{filepath.Join(onlyFSDir, tc.wantPrefix)}
 				})
 				if err := contRestore.Restore(conf, sentryOnlyDir, false /* direct */, false /* background */, nil /* networkArgs */); err != nil {
 					t.Fatalf("error restoring container with explicit <dir>/<prefix> fs checkpoint: %v", err)
@@ -1747,4 +1755,119 @@ func TestCheckpointRestoreTUN(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMultiBundleSplitFSCheckpointRestore tests saving and restoring multiple
+// independent filesystem checkpoint bundles (e.g. rootfs=/ and fs=/dur-data),
+// including combining bundles from different checkpoints on fresh container
+// start.
+func TestMultiBundleSplitFSCheckpointRestore(t *testing.T) {
+	if !testutil.IsCheckpointSupported() {
+		t.Skip("Checkpoint not supported")
+	}
+
+	const (
+		rootfsPrefix = "rootfs/"
+		fsPrefix     = "bundles/fs"
+		durMount     = "/dur-data"
+		rootFile     = "/rootfs_marker"
+	)
+
+	conf := overlayTestConfig(t)
+	fsSaveDir := makeTempDir(t, "multi-bundle-fssave")
+	checkpointDir := makeTempDir(t, "multi-bundle-checkpoint")
+
+	tmpfsSourceDir := makeTempDir(t, "dur-source")
+	durFile := filepath.Join(durMount, "dur_marker")
+
+	script := fmt.Sprintf("echo root_val_1 > %q; echo dur_val_1 > %q; while true; do sleep 1; done", rootFile, durFile)
+	spec := testutil.NewSpecWithArgs("bash", "-c", script)
+	spec.Root.Readonly = false
+	addTmpfsMount(spec, "dur-mount", tmpfsSourceDir, durMount)
+	bundleDir := setupBundle(t, conf, spec)
+
+	cont := startContainer(t, conf, spec, bundleDir, nil)
+	waitForGuestFiles(t, conf, cont, rootFile, durFile)
+
+	bundleSpecs := []string{
+		rootfsPrefix + "=/",
+		fsPrefix + "=" + durMount,
+	}
+
+	// Save an initial multi-bundle filesystem checkpoint while keeping the
+	// container running.
+	if err := cont.FSSave(conf, fsSaveDir, sandbox.FSSaveOpts{Paths: bundleSpecs}); err != nil {
+		t.Fatalf("error saving filesystem checkpoint: %v", err)
+	}
+	checkFSCheckpointFiles(t, fsSaveDir, rootfsPrefix)
+	checkFSCheckpointFiles(t, fsSaveDir, fsPrefix)
+
+	// Mutate both filesystems before taking a full split checkpoint so the two
+	// checkpoints have distinct states.
+	mutateScript := fmt.Sprintf("echo root_val_2 > %q && echo dur_val_2 > %q", rootFile, durFile)
+	if ws, err := execute(conf, cont, "/bin/bash", "-c", mutateScript); err != nil || ws.ExitStatus() != 0 {
+		t.Fatalf("failed to mutate files before second checkpoint: ws=%v, err=%v", ws, err)
+	}
+
+	// Checkpoint with two bundles: rootfs and fs.
+	if err := cont.Checkpoint(conf, checkpointDir, sandbox.CheckpointOpts{SplitFSCheckpointPaths: bundleSpecs}); err != nil {
+		t.Fatalf("error checkpointing container: %v", err)
+	}
+	checkFSCheckpointFiles(t, checkpointDir, rootfsPrefix)
+	checkFSCheckpointFiles(t, checkpointDir, fsPrefix)
+
+	rootfsDir := copyCheckpointFiles(t, checkpointDir, "isolated-rootfs", prefixedFSCheckpointFiles(rootfsPrefix))
+	durDir := copyCheckpointFiles(t, checkpointDir, "isolated-fs", append(prefixedFSCheckpointFiles(fsPrefix), sentryCheckpointFiles...))
+
+	for _, rtc := range []struct {
+		name          string
+		restoreDir    string
+		fsRestorePath []string
+		mutateArgs    func(*Args)
+	}{
+		{
+			name:       "AutoDiscoverBothBundles",
+			restoreDir: checkpointDir,
+			mutateArgs: func(args *Args) { args.CheckpointDirPath = checkpointDir },
+		},
+		{
+			name:          "IsolatedPrefixPathsRestore",
+			restoreDir:    durDir,
+			fsRestorePath: []string{filepath.Join(rootfsDir, rootfsPrefix), filepath.Join(durDir, fsPrefix)},
+		},
+	} {
+		t.Run(rtc.name, func(t *testing.T) {
+			contRestore := newContainer(t, conf, spec, bundleDir, func(args *Args) {
+				args.FSRestoreImagePaths = rtc.fsRestorePath
+				if rtc.mutateArgs != nil {
+					rtc.mutateArgs(args)
+				}
+			})
+			if err := contRestore.Restore(conf, rtc.restoreDir, false /* direct */, false /* background */, nil /* networkArgs */); err != nil {
+				t.Fatalf("error restoring container: %v", err)
+			}
+			checkGuestFile(t, conf, contRestore, rootFile, "root_val_2")
+			checkGuestFile(t, conf, contRestore, durFile, "dur_val_2")
+		})
+	}
+
+	t.Run("StartFreshCombiningBundlesFromDifferentCheckpoints", func(t *testing.T) {
+		specFresh := testutil.NewSpecWithArgs("sleep", "100")
+		specFresh.Root.Readonly = false
+		addTmpfsMount(specFresh, "dur-mount", tmpfsSourceDir, durMount)
+		bundleDirFresh := setupBundle(t, conf, specFresh)
+
+		contFresh := startContainer(t, conf, specFresh, bundleDirFresh, func(args *Args) {
+			args.FSRestoreImagePaths = []string{
+				filepath.Join(fsSaveDir, rootfsPrefix),
+				filepath.Join(checkpointDir, fsPrefix),
+			}
+		})
+		if err := contFresh.WaitFSRestore(); err != nil {
+			t.Fatalf("error waiting for filesystem restore: %v", err)
+		}
+
+		checkGuestFile(t, conf, contFresh, rootFile, "root_val_1")
+		checkGuestFile(t, conf, contFresh, durFile, "dur_val_2")
+	})
 }

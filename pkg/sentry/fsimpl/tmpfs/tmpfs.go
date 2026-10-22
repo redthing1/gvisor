@@ -217,7 +217,7 @@ func getDefaultInodeLimit(disable bool) uint64 {
 		return 0
 	}
 
-	return totalHostMem / hostarch.PageSize / 2
+	return (totalHostMem >> hostarch.PageShift) / 2
 }
 
 // GetFilesystem implements vfs.FilesystemType.GetFilesystem.
@@ -267,7 +267,7 @@ func (fstype FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virt
 		rootMode = 01777
 	}
 
-	maxSizeInPages := getDefaultSizeLimit(disableDefaultSizeLimit) / hostarch.PageSize
+	maxSizeInPages := getDefaultSizeLimit(disableDefaultSizeLimit) >> hostarch.PageShift
 	maxInodes := getDefaultInodeLimit(disableDefaultSizeLimit)
 	rootKUID := creds.EffectiveKUID
 	rootKGID := creds.EffectiveKGID
@@ -293,7 +293,7 @@ func (fstype FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virt
 					ctx.Warningf("tmpfs.FilesystemType.GetFilesystem: Pages RoundUp Overflow error")
 					return nil, nil, linuxerr.EINVAL
 				}
-				printedSize = (maxSizeInPages*hostarch.PageSize + 1023) / 1024
+				printedSize = (maxSizeInPages*uint64(hostarch.PageSize) + 1023) / 1024
 			} else {
 				maxSizeInPages = math.MaxInt64
 				printedSize = 0
@@ -311,7 +311,7 @@ func (fstype FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virt
 				return nil, nil, linuxerr.EINVAL
 			}
 			maxSizeInPages = maxBlocks
-			printedSize := (maxSizeInPages*hostarch.PageSize + 1023) / 1024
+			printedSize := (maxSizeInPages*uint64(hostarch.PageSize) + 1023) / 1024
 			printedOptsMap[optSize] = fmt.Sprintf("size=%vk", printedSize)
 
 		case optNrInodes:
@@ -497,8 +497,8 @@ func (d *dentry) releaseChildrenLocked(ctx context.Context) {
 func (fs *filesystem) statFS() linux.Statfs {
 	st := linux.Statfs{
 		Type:         linux.TMPFS_MAGIC,
-		BlockSize:    hostarch.PageSize,
-		FragmentSize: hostarch.PageSize,
+		BlockSize:    int64(hostarch.PageSize),
+		FragmentSize: int64(hostarch.PageSize),
 		NameLength:   linux.NAME_MAX,
 	}
 
@@ -810,7 +810,7 @@ func (i *inode) statTo(stat *linux.Statx) {
 		linux.STATX_UID | linux.STATX_GID | linux.STATX_INO | linux.STATX_SIZE |
 		linux.STATX_BLOCKS | linux.STATX_ATIME | linux.STATX_BTIME |
 		linux.STATX_CTIME | linux.STATX_MTIME
-	stat.Blksize = hostarch.PageSize
+	stat.Blksize = uint32(hostarch.PageSize)
 	stat.Nlink = i.nlink.Load()
 	stat.UID = i.uid.Load()
 	stat.GID = i.gid.Load()
@@ -1089,22 +1089,27 @@ func (i *inode) listXattr(creds *auth.Credentials, size uint64) ([]string, error
 }
 
 func (i *inode) getXattr(creds *auth.Credentials, opts *vfs.GetXattrOptions) (string, error) {
-	if err := i.checkXattrPrefix(opts.Name); err != nil {
-		return "", err
-	}
 	mode := linux.FileMode(i.mode.Load())
 	kuid := auth.KUID(i.uid.Load())
 	kgid := auth.KGID(i.gid.Load())
+
+	// Linux requires read permission for xattr reads outside the security.*,
+	// system.*, and trusted.* namespaces, and applies the check before any
+	// handler-specific rejection; see fs/xattr.c:xattr_permission().
+	if vfs.XattrReadNeedsFilePermission(opts.Name) {
+		acl := i.accessACL.Load()
+		if err := vfs.GenericCheckPermissions(creds, vfs.MayRead, mode, acl, kuid, kgid); err != nil {
+			return "", err
+		}
+	}
+	if err := i.checkXattrPrefix(opts.Name); err != nil {
+		return "", err
+	}
 
 	if strings.HasPrefix(opts.Name, linux.XATTR_SYSTEM_PREFIX) {
 		// Handle POSIX ACL xattrs
 		xattr, err := vfs.ACLGetXattr(creds, opts, mode, i.accessACL.Load(), i.defaultACL.Load())
 		return xattr, err
-	}
-
-	acl := i.accessACL.Load()
-	if err := vfs.GenericCheckPermissions(creds, vfs.MayRead, mode, acl, kuid, kgid); err != nil {
-		return "", err
 	}
 
 	return i.xattrs.GetXattr(creds, mode, kuid, opts)

@@ -85,6 +85,13 @@ syscall_test(
     test = "//test/syscalls/linux:cgroup2_test",
 )
 
+# Transfers must run separately from tests that enter non-root memory cgroups:
+# memory charges survive task migration and cgroup removal and can pin controllers.
+syscall_test(
+    in_sandbox_cgroup = "v2",
+    test = "//test/syscalls/linux:cgroup2_transfer_test",
+)
+
 syscall_test(
     add_fusefs = True,
     add_overlay = True,
@@ -458,6 +465,9 @@ syscall_test(
 
 syscall_test(
     timeout = "eternal",  # YES_I_REALLY_NEED_AN_ETERNAL_TEST
+    # This fixed page-table leak workload makes millions of calls and does not
+    # consume their trace output. Keep debug logs without per-syscall tracing.
+    args = ["--strace=false"],
     save = False,  # save tests incorrectly shorten timeout to "long"
     test = "//test/syscalls/linux:mmap_eternal_test",
 )
@@ -630,6 +640,13 @@ syscall_test(
     container = True,
     one_sandbox = False,
     test = "//test/syscalls/linux:proc_isolated_test",
+)
+
+# Linux's key quota is host-wide. Keep its readers and writers together and
+# prevent other local tests from overlapping this unsharded test target.
+syscall_test(
+    tags = ["exclusive-if-local"],
+    test = "//test/syscalls/linux:proc_keys_test",
 )
 
 syscall_test(
@@ -1363,6 +1380,9 @@ syscall_test(
 )
 
 syscall_test(
+    # Per-syscall tracing dominates the million deliberately invalid close calls.
+    # Keep debug logs without formatting a trace for every call.
+    args = ["--strace=false"],
     test = "//test/syscalls/linux:processes_test",
 )
 
@@ -1382,6 +1402,7 @@ syscall_test(
     test = "//test/syscalls/linux:close_range_test",
 )
 
+# Internal socket-option tests depend on these generated test targets.
 syscall_test(
     save = False,
     test = "//test/syscalls/linux:socketopt_test",

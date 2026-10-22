@@ -288,7 +288,7 @@ func (rf *regularFile) AddMapping(ctx context.Context, ms memmap.MappingSpace, a
 		pagesBefore := rf.writableMappingPages
 
 		// ar is guaranteed to be page aligned per memmap.Mappable.
-		rf.writableMappingPages += uint64(ar.Length() / hostarch.PageSize)
+		rf.writableMappingPages += uint64(ar.Length() >> hostarch.PageShift)
 
 		if rf.writableMappingPages < pagesBefore {
 			panic(fmt.Sprintf("Overflow while mapping potentially writable pages pointing to a tmpfs file. Before %v, after %v", pagesBefore, rf.writableMappingPages))
@@ -309,7 +309,7 @@ func (rf *regularFile) RemoveMapping(ctx context.Context, ms memmap.MappingSpace
 		pagesBefore := rf.writableMappingPages
 
 		// ar is guaranteed to be page aligned per memmap.Mappable.
-		rf.writableMappingPages -= uint64(ar.Length() / hostarch.PageSize)
+		rf.writableMappingPages -= uint64(ar.Length() >> hostarch.PageShift)
 
 		if rf.writableMappingPages > pagesBefore {
 			panic(fmt.Sprintf("Underflow while unmapping potentially writable pages pointing to a tmpfs file. Before %v, after %v", pagesBefore, rf.writableMappingPages))
@@ -863,7 +863,7 @@ func (rw *regularFileReadWriter) WriteFromBlocks(srcs safemem.BlockSeq) (uint64,
 		case gap.Ok():
 			// Allocate memory for the write.
 			gapMR := gap.Range().Intersect(pgMR)
-			pagesToFill := gapMR.Length() / hostarch.PageSize
+			pagesToFill := gapMR.Length() >> hostarch.PageShift
 			pagesReserved := fs.accountPagesPartial(pagesToFill)
 			if pagesReserved == 0 {
 				if done == 0 {
@@ -873,7 +873,7 @@ func (rw *regularFileReadWriter) WriteFromBlocks(srcs safemem.BlockSeq) (uint64,
 				retErr = nil
 				goto exitLoop
 			}
-			gapMR.End = gapMR.Start + (hostarch.PageSize * pagesReserved)
+			gapMR.End = gapMR.Start + (uint64(hostarch.PageSize) * pagesReserved)
 			allocMode := pgalloc.AllocateAndWritePopulate
 			if fs.mf.IsDiskBacked() {
 				// Don't populate pages for disk-backed files. Benchmarking showed that
@@ -916,13 +916,18 @@ exitLoop:
 	return done, retErr
 }
 
+// hostWriteThreshold is the smallest contiguous write to a disk-backed
+// MemoryFile that is issued as a host write syscall rather than copied
+// through the internal mapping. Disk-backed pages are not pre-populated, so
+// copying faults them in one by one, while a single write syscall faults
+// them all at once. Below the threshold the syscall dominates: on platforms
+// where the sentry runs in guest mode (KVM) a host syscall costs a VM exit,
+// far more than a page fault, and rewrites of already-populated pages cost
+// nothing when copied.
+var hostWriteThreshold = 16 * uint64(hostarch.PageSize)
+
 func (rw *regularFileReadWriter) writeToMF(fr memmap.FileRange, srcs safemem.BlockSeq) (uint64, error) {
-	if rw.file.inode.fs.mf.IsDiskBacked() {
-		// Disk-backed files are not prepopulated. The safemem.CopySeq() approach
-		// used below incurs a lot of page faults without page prepopulation, which
-		// causes a lot of context switching. Use write(2) host syscall instead,
-		// which makes one context switch and faults all the pages that are touched
-		// during the write.
+	if rw.file.inode.fs.mf.IsDiskBacked() && fr.Length() >= hostWriteThreshold {
 		fd, err := rw.file.inode.fs.mf.DataFD(fr)
 		if err != nil {
 			return 0, err

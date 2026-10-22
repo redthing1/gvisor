@@ -21,11 +21,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/runsc/cgroup"
+	"gvisor.dev/gvisor/runsc/specutils"
 )
 
 func TestIsRunning(t *testing.T) {
@@ -242,6 +245,187 @@ func TestCalculateCPUNum(t *testing.T) {
 			}
 			if gotPeriod != tc.cpuPeriod {
 				t.Errorf("calculateCPUNum() got cpuPeriod = %d, want %d", gotPeriod, tc.cpuPeriod)
+			}
+		})
+	}
+}
+
+func TestRootfsUpperTarFlags(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "target.tar")
+	if err := os.WriteFile(targetPath, []byte("tar-data"), 0644); err != nil {
+		t.Fatalf("os.WriteFile(%q) failed: %v", targetPath, err)
+	}
+	symlinkPath := filepath.Join(tmpDir, "symlink.tar")
+	if err := os.Symlink(targetPath, symlinkPath); err != nil {
+		t.Fatalf("os.Symlink(%q, %q) failed: %v", targetPath, symlinkPath, err)
+	}
+
+	if f, err := os.OpenFile(symlinkPath, rootfsUpperTarFlags(symlinkPath), 0644); err == nil {
+		f.Close()
+		t.Fatalf("os.OpenFile(%q, rootfsUpperTarFlags) error = nil, want %v", symlinkPath, unix.ELOOP)
+	} else if !errors.Is(err, unix.ELOOP) {
+		t.Errorf("os.OpenFile(%q, rootfsUpperTarFlags) error = %v, want %v", symlinkPath, err, unix.ELOOP)
+	}
+
+	f, err := os.OpenFile(targetPath, rootfsUpperTarFlags(targetPath), 0644)
+	if err != nil {
+		t.Fatalf("os.OpenFile(%q, rootfsUpperTarFlags) error = %v, want nil", targetPath, err)
+	}
+	defer f.Close()
+
+	procFDPath := fmt.Sprintf("/proc/self/fd/%d", f.Fd())
+	dupFile, err := os.OpenFile(procFDPath, rootfsUpperTarFlags(procFDPath), 0644)
+	if err != nil {
+		t.Fatalf("os.OpenFile(%q, rootfsUpperTarFlags) error = %v, want nil", procFDPath, err)
+	}
+	dupFile.Close()
+
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{path: "/proc/self/fd/3", want: true},
+		{path: "/proc/thread-self/fd/4", want: true},
+		{path: "/dev/fd/5", want: true},
+		{path: "/proc/self/fd/", want: false},
+		{path: "/proc/self/fd/../etc/passwd", want: false},
+		{path: "/proc/self/fd/2147483648", want: false},
+		{path: "/tmp/upper.tar", want: false},
+	} {
+		if got := specutils.IsProcFDPath(tc.path); got != tc.want {
+			t.Errorf("specutils.IsProcFDPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestOpenReadOnlyTree(t *testing.T) {
+	dir := t.TempDir()
+	const name = "file"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0666); err != nil {
+		t.Fatalf("os.WriteFile failed: %v", err)
+	}
+	treeFD, err := openReadOnlyTree(dir)
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.ENOSYS) {
+		t.Skipf("openReadOnlyTree needs CAP_SYS_ADMIN and Linux 5.12: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("openReadOnlyTree failed: %v", err)
+	}
+	defer unix.Close(treeFD)
+	f, err := openCheckpointFile(treeFD, dir, name, unix.O_RDONLY)
+	if err != nil {
+		t.Fatalf("open through the read-only tree failed: %v", err)
+	}
+	defer f.Close()
+	fd := int(f.Fd())
+
+	// A symlink leading out of the directory is not followed.
+	if err := os.Symlink(filepath.Join("..", filepath.Base(dir), name), filepath.Join(dir, "escape")); err != nil {
+		t.Fatalf("os.Symlink failed: %v", err)
+	}
+	if ef, err := openCheckpointFile(treeFD, dir, "escape", unix.O_RDONLY); err == nil {
+		ef.Close()
+		t.Errorf("open through a symlink leaving the directory succeeded, want EXDEV")
+	} else if !errors.Is(err, unix.EXDEV) {
+		t.Errorf("open through a symlink leaving the directory failed with %v, want EXDEV", err)
+	}
+
+	// The file can not be reopened for writing through any path.
+	for _, flags := range []int{unix.O_WRONLY, unix.O_RDWR} {
+		wfd, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", fd), flags|unix.O_CLOEXEC, 0)
+		if err == nil {
+			unix.Close(wfd)
+			t.Errorf("reopening with flags %#x succeeded, want EROFS", flags)
+		} else if !errors.Is(err, unix.EROFS) {
+			t.Errorf("reopening with flags %#x failed with %v, want EROFS", flags, err)
+		}
+	}
+	// The directory itself is unaffected.
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("y"), 0666); err != nil {
+		t.Errorf("writing through the original path failed: %v", err)
+	}
+}
+
+func TestOpenFSRestoreFilesForLocalCheckpointErrors(t *testing.T) {
+	dir := t.TempDir()
+	files, err := createFSCheckpointLocalFiles(dir, "rootfs", false)
+	if err != nil {
+		t.Fatalf("createFSCheckpointLocalFiles(%q, \"rootfs\") failed: %v", dir, err)
+	}
+	for _, f := range files {
+		_ = f.Close()
+	}
+
+	for _, tc := range []struct {
+		name    string
+		paths   []string
+		wantErr string
+	}{
+		{name: "duplicate explicit prefix path", paths: []string{filepath.Join(dir, "rootfs"), filepath.Join(dir, "rootfs")}, wantErr: "duplicate filesystem checkpoint bundle"},
+		{name: "duplicate mixing directory and explicit prefix", paths: []string{dir, filepath.Join(dir, "rootfs")}, wantErr: "duplicate filesystem checkpoint bundle"},
+		{name: "non-existent directory with trailing slash", paths: []string{filepath.Join(dir, "missing") + "/"}, wantErr: "does not exist"},
+		{name: "empty directory", paths: []string{t.TempDir(), dir}, wantErr: "opening manifest file"},
+		{name: "only empty strings", paths: []string{"", ""}, wantErr: "empty --fs-restore-image-path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := openFSRestoreFilesForLocalCheckpoint(tc.paths, false); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("openFSRestoreFilesForLocalCheckpoint(%q) error = %v, want substring %q", tc.paths, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDiscoverFSCheckpointPrefixesFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	files, err := createFSCheckpointLocalFiles(dir, "fs", false)
+	if err != nil {
+		t.Fatalf("createFSCheckpointLocalFiles(%q, \"fs\") failed: %v", dir, err)
+	}
+	for _, f := range files {
+		_ = f.Close()
+	}
+	link := filepath.Join(t.TempDir(), "latest")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatalf("os.Symlink(%q, %q) failed: %v", dir, link, err)
+	}
+
+	got, err := discoverFSCheckpointPrefixes(link)
+	if err != nil {
+		t.Fatalf("discoverFSCheckpointPrefixes(%q) failed: %v", link, err)
+	}
+	if want := []string{"fs"}; !slices.Equal(got, want) {
+		t.Errorf("discoverFSCheckpointPrefixes(%q) = %q, want %q", link, got, want)
+	}
+}
+
+func TestIsGCSRestorePath(t *testing.T) {
+	gcsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(gcsDir, checkpointGCSOptsFileName), []byte("{}"), 0644); err != nil {
+		t.Fatalf("os.WriteFile failed: %v", err)
+	}
+	localDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(localDir, "bundles"), 0755); err != nil {
+		t.Fatalf("os.Mkdir failed: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		path         string
+		wantGCS      bool
+		wantPrefixed bool
+	}{
+		{name: "gcs directory", path: gcsDir, wantGCS: true},
+		{name: "gcs prefix", path: filepath.Join(gcsDir, "fs"), wantGCS: true, wantPrefixed: true},
+		{name: "gcs nested prefix", path: filepath.Join(gcsDir, "bundles", "fs"), wantGCS: true, wantPrefixed: true},
+		{name: "gcs nested directory prefix", path: filepath.Join(gcsDir, "a", "b") + "/", wantGCS: true, wantPrefixed: true},
+		{name: "local directory", path: localDir},
+		{name: "local nested prefix", path: filepath.Join(localDir, "bundles", "fs"), wantPrefixed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotGCS, gotPrefixed := isGCSRestorePath(tc.path)
+			if gotGCS != tc.wantGCS || gotPrefixed != tc.wantPrefixed {
+				t.Errorf("isGCSRestorePath(%q) = (%t, %t), want (%t, %t)", tc.path, gotGCS, gotPrefixed, tc.wantGCS, tc.wantPrefixed)
 			}
 		})
 	}

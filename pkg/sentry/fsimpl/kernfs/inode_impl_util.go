@@ -211,7 +211,7 @@ func (a *InodeAttrs) InitWithIDs(ctx context.Context, uid auth.KUID, gid auth.KG
 	a.uid.Store(uint32(uid))
 	a.gid.Store(uint32(gid))
 	a.nlink.Store(nlink)
-	a.blockSize.Store(hostarch.PageSize)
+	a.blockSize.Store(uint32(hostarch.PageSize))
 	now := ktime.NowFromContext(ctx).Nanoseconds()
 	a.atime.Store(now)
 	a.mtime.Store(now)
@@ -600,6 +600,24 @@ func (o *OrderedChildren) removeLocked(name string) {
 		delete(o.set, name)
 		o.order.Remove(s)
 	}
+}
+
+// RemoveStatic removes a child entry (including static entries) from o and
+// drops the reference owned by o if the entry was static.
+func (o *OrderedChildren) RemoveStatic(ctx context.Context, name string) error {
+	o.mu.Lock()
+	s, ok := o.set[name]
+	if !ok {
+		o.mu.Unlock()
+		return linuxerr.ENOENT
+	}
+	delete(o.set, name)
+	o.order.Remove(s)
+	o.mu.Unlock()
+	if s.static {
+		s.inode.DecRef(ctx)
+	}
+	return nil
 }
 
 // Precondition: caller must hold o.mu for reading or writing.

@@ -104,6 +104,13 @@ steps:
     command: make smoke-race-tests
     agents:
       queue: "default"
+
+  # Run the remaining tests only if the smoke tests pass, so that a change
+  # that does not build or start does not use the other agents (presubmits
+  # only).
+  - wait: ~
+    if: build.branch != "master"
+
   - <<: *common
     <<: *source_test
     label: ":speedboat: Compile runsc-plugin-stack (AMD64)"
@@ -427,7 +434,7 @@ steps:
   - <<: *common
     <<: *source_test_continuous
     label: ":muscle: System call tests (ARM64 64K)"
-    command: "make BAZEL_OPTIONS='--test_tag_filters=-allsave,runsc_systrap --define=pagesize=64k' syscall-tests"
+    command: make BAZEL_OPTIONS=--config=syscalls-arm64-64k syscall-tests
     parallelism: 10
     agents:
       arch: "arm64"

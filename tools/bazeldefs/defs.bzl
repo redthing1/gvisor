@@ -2,13 +2,14 @@
 
 load("@bazel_skylib//:bzl_library.bzl", _bzl_library = "bzl_library")
 load("@bazel_skylib//rules:build_test.bzl", _build_test = "build_test")
-load("@bazel_skylib//rules:common_settings.bzl", _BuildSettingInfo = "BuildSettingInfo", _bool_flag = "bool_flag")
+load("@bazel_skylib//rules:common_settings.bzl", _BuildSettingInfo = "BuildSettingInfo", _bool_flag = "bool_flag", _string_flag = "string_flag")
 load("@bazel_skylib//rules:expand_template.bzl", _expand_template = "expand_template")
 load("@com_google_protobuf//bazel:proto_library.bzl", _proto_library = "proto_library")
 
 build_test = _build_test
 bzl_library = _bzl_library
 bool_flag = _bool_flag
+string_flag = _string_flag
 BuildSettingInfo = _BuildSettingInfo
 expand_template = _expand_template
 more_shards = 4
@@ -92,6 +93,71 @@ def default_net_util():
 
 def coreutil():
     return []  # Nothing needed.
+
+def target_emulator():
+    """Returns the user-mode emulator that runs target binaries at build time.
+
+    The emulators are pinned, statically-linked QEMU builds for the execution
+    platform's architecture (see target_emulators).
+
+    Returns:
+      A struct with:
+        tools: labels to add to the tools of a genrule.
+        cmd: the emulator command to run target binaries with when the
+          execution platform's architecture differs from the target's, or an
+          empty string if there is none. This may reference `tools` using make
+          variables.
+    """
+    return struct(
+        tools = select_arch(
+            amd64 = ["//tools/bazeldefs:qemu_x86_64"],
+            arm64 = ["//tools/bazeldefs:qemu_aarch64"],
+            riscv64 = ["//tools/bazeldefs:qemu_riscv64"],
+            default = [],
+        ),
+        cmd = select_arch(
+            amd64 = "$(execpath //tools/bazeldefs:qemu_x86_64)",
+            arm64 = "$(execpath //tools/bazeldefs:qemu_aarch64)",
+            riscv64 = "$(execpath //tools/bazeldefs:qemu_riscv64)",
+            default = "",
+        ),
+    )
+
+def target_emulators(name):
+    """Defines the user-mode emulators used by target_emulator.
+
+    Each emulator is the pinned QEMU build for the execution platform's
+    architecture (see extensions/deb_data.bzl), or a stub that fails if there
+    is none. This must only be called from tools/bazeldefs/BUILD.
+
+    Args:
+      name: prefix of the emulator targets, which are named <name>_<arch>.
+    """
+    native.alias(
+        name = name + "_aarch64",
+        actual = select({
+            ":amd64": "@qemu_user_amd64_files//:usr/bin/qemu-aarch64",
+            "//conditions:default": ":no_emulator.sh",
+        }),
+        tags = ["manual"],
+    )
+    native.alias(
+        name = name + "_riscv64",
+        actual = select({
+            ":amd64": "@qemu_user_amd64_files//:usr/bin/qemu-riscv64",
+            ":arm64": "@qemu_user_arm64_files//:usr/bin/qemu-riscv64",
+            "//conditions:default": ":no_emulator.sh",
+        }),
+        tags = ["manual"],
+    )
+    native.alias(
+        name = name + "_x86_64",
+        actual = select({
+            ":arm64": "@qemu_user_arm64_files//:usr/bin/qemu-x86_64",
+            "//conditions:default": ":no_emulator.sh",
+        }),
+        tags = ["manual"],
+    )
 
 def bpf_program(name, src, bpf_object, visibility, hdrs):
     """Generates BPF object files from .c source code.

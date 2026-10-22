@@ -23,9 +23,9 @@ import (
 	"reflect"
 	"sort"
 
-	"archive/zip"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/types/objectpath"
+	"gvisor.dev/gvisor/pkg/zip"
 	"gvisor.dev/gvisor/tools/checkconst"
 )
 
@@ -106,11 +106,19 @@ func (p *Package) Serialize(w io.Writer) error {
 		if err != nil {
 			continue // Not exported; expected.
 		}
+		sortedFacts := make([]analysis.Fact, len(facts))
+		copy(sortedFacts, facts)
+		sort.Slice(sortedFacts, func(i, j int) bool {
+			return fmt.Sprintf("%T", sortedFacts[i]) < fmt.Sprintf("%T", sortedFacts[j])
+		})
 		is = append(is, item{
 			Key:   string(name),
-			Value: facts,
+			Value: sortedFacts,
 		})
 	}
+	sort.Slice(is, func(i, j int) bool {
+		return is[i].Key < is[j].Key
+	})
 	return writeItems(w, is)
 }
 
@@ -191,7 +199,13 @@ func NewBundle() *Bundle {
 // Serialize implements Serializer.Serialize.
 func (b *Bundle) Serialize(w io.Writer) error {
 	zw := zip.NewWriter(w)
-	for pkg, facts := range b.decoded {
+	pkgs := make([]string, 0, len(b.decoded))
+	for pkg := range b.decoded {
+		pkgs = append(pkgs, pkg)
+	}
+	sort.Strings(pkgs)
+	for _, pkg := range pkgs {
+		facts := b.decoded[pkg]
 		if facts == nil {
 			// Some facts may be omitted for bundles, if there is
 			// only type information but no source information. We

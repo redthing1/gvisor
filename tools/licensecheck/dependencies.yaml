@@ -885,10 +885,10 @@
   sha256: 201e678d0a35b18b246abe58d80017b75d60be21cbaf4cbb9e963b48872565a9
   license: BSD-3-Clause
 - dependency: golang.org/x/net
-  version: v0.59.0
-  retrieved: "2026-10-07"
-  commit: 540d04cfe5028e2655754591a4d3e08c586809f2
-  sha256: 1dc3bf31fcebe80d393288ac8fe5cac7f0e82e9b3a2630021dcdf5ffbfa3f601
+  version: v0.60.0
+  retrieved: "2026-10-08"
+  commit: 18ece0ce30bc35fa81fe72028bf309bb3ff3f4a5
+  sha256: 052e0453db47a96ae9567503e7c95ea925ab52682cb1cec31250541f7160107e
   license: BSD-3-Clause
 - dependency: golang.org/x/oauth2
   version: v0.36.0
@@ -1115,6 +1115,18 @@
   commit: 4eb9011f3e6d551d067d87c89f082261164fac31
   sha256: 26dc6db523ee943af51fdfc292658a2dbe7046735654f1dc839745988f0fe26b
   license: Apache-2.0
+- dependency: qemu_user_amd64
+  version: https://snapshot.debian.org/archive/debian/20260905T205002Z/pool/main/q/qemu/qemu-user_10.0.13%2Bds-0%2Bdeb13u1_amd64.deb
+  retrieved: "2026-10-05"
+  commit: ""
+  sha256: ca6ede739327a20ae5a3498230c8a3a9a072c586e131bc6bcc1201eb1725e336
+  license: GPL-2.0-only
+- dependency: qemu_user_arm64
+  version: https://snapshot.debian.org/archive/debian/20260905T205002Z/pool/main/q/qemu/qemu-user_10.0.13%2Bds-0%2Bdeb13u1_arm64.deb
+  retrieved: "2026-10-05"
+  commit: ""
+  sha256: c73711af02b97cd5e2667e735d9c06890c57165517110ca4e646c95a7083158d
+  license: GPL-2.0-only
 - dependency: rules_cc
   version: https://github.com/bazelbuild/rules_cc/releases/download/0.2.22/rules_cc-0.2.22.tar.gz
   retrieved: "2026-10-06"
