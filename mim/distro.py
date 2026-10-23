@@ -2,7 +2,7 @@
 # Copyright 2026 The gVisor Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build coinstallable RPM and Debian packages from a verified runtime bundle."""
+"""Build RPM and Debian packages from a verified runtime bundle."""
 
 import json
 import os
@@ -65,8 +65,8 @@ def packages(archive: Path, destination: Path) -> list[Path]:
         manifest, payload = unpack(archive, work)
         version = manifest["version"]
         deb_arch, rpm_arch = ARCHITECTURES[manifest["architecture"]]
-        name = f"mim-gvisor-{version}"
-        install = Path("usr/lib/mim-gvisor") / version
+        name = "mim-gvisor"
+        install = Path("usr/lib/mim-gvisor")
         root = work / "root"
         shutil.copytree(payload, root / install)
         environment = {
@@ -80,7 +80,7 @@ def packages(archive: Path, destination: Path) -> list[Path]:
             "Maintainer: Mim maintainers <redthing1@alt.icu>\n"
             "Section: admin\nPriority: optional\nDepends: dash\n"
             "Homepage: https://github.com/redthing1/gvisor\n"
-            "Description: Versioned gVisor runtime for rootless Podman\n"
+            "Description: gVisor runtime for rootless Podman\n"
             " Includes fixed OCI runtime profiles. No engine configuration is changed.\n"
         )
         deb = destination / f"{name}_{version}_{deb_arch}.deb"
@@ -94,15 +94,15 @@ def packages(archive: Path, destination: Path) -> list[Path]:
         spec = work / "runtime.spec"
         spec.write_text(
             f"Name: {name}\nVersion: {rpm_version}\nRelease: {rpm_release}\n"
-            "Summary: Versioned gVisor runtime for rootless Podman\n"
+            "Summary: gVisor runtime for rootless Podman\n"
             "License: Apache-2.0\nURL: https://github.com/redthing1/gvisor\n"
             f"BuildArch: {rpm_arch}\nAutoReqProv: no\nRequires: /bin/sh\n"
             # Preserve upstream binaries and the checksums in their manifest.
             "%global __os_install_post %{nil}\n%global _build_id_links none\n"
-            "%description\nVersioned gVisor with fixed OCI runtime profiles.\n"
+            "%description\ngVisor with fixed OCI runtime profiles.\n"
             "%install\n"
-            f"mkdir -p %{{buildroot}}/usr/lib/mim-gvisor\n"
-            f"cp -a {root / install} %{{buildroot}}/usr/lib/mim-gvisor/\n"
+            f"mkdir -p %{{buildroot}}/usr/lib\n"
+            f"cp -a {root / install} %{{buildroot}}/usr/lib/\n"
             f"%files\n%defattr(-,root,root,-)\n/{install}\n"
         )
         subprocess.run(

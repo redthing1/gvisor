@@ -9,19 +9,13 @@ Install a runtime release using the [build and install instructions](README.md).
 The host needs working rootless Podman with its systemd cgroup driver,
 podman-compose, pasta from passt, a user systemd manager and cgroup v2 delegation.
 
-Select an installed release in the deployment's `.env`:
-
-```dotenv
-GVISOR_VERSION=20261019.0-mim.1
-```
-
 Add these settings to an existing service, retaining its image, storage and
 application security policy:
 
 ```yaml
 services:
   app:
-    runtime: /usr/lib/mim-gvisor/${GVISOR_VERSION:?Select an installed runtime}/profiles/online/runsc
+    runtime: /usr/lib/mim-gvisor/profiles/online/runsc
     network_mode: pasta:--no-splice
     security_opt:
       - label=disable
@@ -32,6 +26,11 @@ services:
 Point the host reverse proxy, such as Nginx, at `http://127.0.0.1:3000`. Configure
 the application's public URL and proxy handling normally. Git over HTTP uses the
 same route. Adjust the port to match the application.
+
+Package upgrades keep this runtime path unchanged. Stop the affected services,
+install the updated package and recreate them with
+`podman-compose up -d --force-recreate`. A running sandbox uses the old runtime until it
+is recreated.
 
 ## Network and isolation
 

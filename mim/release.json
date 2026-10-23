@@ -1,5 +1,5 @@
 {
-  "version": "20261019.0-mim.1",
+  "version": "20261019.0-mim.2",
   "upstream": {
     "tag": "release-20261019.0",
     "commit": "760b80785dc53311d4c87bd2de167525a99709c1"

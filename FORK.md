@@ -45,7 +45,7 @@ dependencies and the upstream release layout when they change. Update
 `upstream.tag` and `upstream.commit` in `mim/release.json`, using
 `git rev-parse "$upstream_tag^{commit}"` for the commit. Set `version` to
 `YYYYMMDD.N-mim.1`, or increment the `mim` suffix for another release on the same
-base. Update the version example in `mim/compose.md` and commit the changes.
+base. Commit the changes.
 
 Upstream publishes weekly and has no LTS releases. Check new releases regularly
 and prioritize security updates; see its [release policy](https://gvisor.dev/release/).
@@ -89,8 +89,9 @@ git tag -a "$version" -m "Mim gVisor $version"
 git push origin main "refs/tags/$version"
 gh release create "$version" --verify-tag --draft \
   --title "Mim gVisor $version" --notes-file /path/to/release-notes.md \
-  .mim-build/out/mim-gvisor-"$version"-* \
-  .mim-build/out/mim-gvisor-"$version"_*
+  .mim-build/out/mim-gvisor-"$version"-*.tar.bz2* \
+  .mim-build/out/mim-gvisor-"$version".*.rpm* \
+  .mim-build/out/mim-gvisor_"$version"_*.deb*
 ```
 
 Release notes state the upstream base, downstream changes and qualified
@@ -101,6 +102,6 @@ gh release edit "$version" --draft=false --latest
 ```
 
 Preserve published tags and asset bytes. Corrections get a new version.
-Deployment machines download and verify the package, install it, then recreate
-selected containers using its versioned runtime path. Retain older runtime
-packages while containers reference them.
+Deployment machines stop affected containers, download and verify the package,
+install it, then recreate the containers. The package name and runtime paths
+remain unchanged across releases.

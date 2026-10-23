@@ -139,7 +139,19 @@ class PackageTest(unittest.TestCase):
         deb, rpm = packages(archive, self.output)
         extracted = self.output / "deb"
         subprocess.run(["dpkg-deb", "--extract", str(deb), str(extracted)], check=True)
-        installed = extracted / "usr/lib/mim-gvisor/20261012.0-mim.2"
+        installed = extracted / "usr/lib/mim-gvisor"
+        self.assertEqual(
+            subprocess.check_output(
+                ["dpkg-deb", "-f", str(deb), "Package"], text=True
+            ).strip(),
+            "mim-gvisor",
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["rpm", "-qp", "--qf", "%{NAME}", str(rpm)], text=True
+            ),
+            "mim-gvisor",
+        )
         manifest = json.loads((installed / "manifest.json").read_text())
         for name, expected in manifest["files"].items():
             self.assertEqual(
@@ -153,13 +165,13 @@ class PackageTest(unittest.TestCase):
             "/" + str(path.relative_to(extracted)) for path in installed.rglob("*")
         }
         self.assertEqual(
-            set(result), {"/usr/lib/mim-gvisor/20261012.0-mim.2", *expected_files}
+            set(result), {"/usr/lib/mim-gvisor", *expected_files}
         )
         dump = subprocess.check_output(["rpm", "-qp", "--dump", str(rpm)], text=True)
         digests = {line.split()[0]: line.split()[3] for line in dump.splitlines()}
         for name, expected in manifest["files"].items():
             self.assertEqual(
-                digests[f"/usr/lib/mim-gvisor/20261012.0-mim.2/{name}"], expected
+                digests[f"/usr/lib/mim-gvisor/{name}"], expected
             )
         self.assertEqual(
             subprocess.check_output(["rpm", "-qp", "--scripts", str(rpm)]), b""

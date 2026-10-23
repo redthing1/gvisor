@@ -1,6 +1,6 @@
 ![gVisor](g3doc/logo.png)
 
-This fork provides prebuilt, versioned gVisor packages for rootless Podman. See
+This fork provides prebuilt gVisor packages for rootless Podman. See
 [releases](https://github.com/redthing1/gvisor/releases),
 [installation and builds](mim/README.md), [Compose services](mim/compose.md), and
 [fork changes and maintenance](FORK.md).

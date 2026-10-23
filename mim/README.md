@@ -15,21 +15,28 @@ sha256sum --check PACKAGE.rpm.sha256
 sudo dnf install ./PACKAGE.rpm
 ```
 
-Each release has its own package name and installs under
-`/usr/lib/mim-gvisor/VERSION/`. Packages contain no install scripts and change no
-engine configuration. Workloads run under the rootless deployment account.
+The package is named `mim-gvisor` and installs under `/usr/lib/mim-gvisor/`.
+Release versions remain in package metadata, filenames and `manifest.json`;
+Compose runtime paths stay unchanged across upgrades. Packages contain no
+install scripts and change no engine configuration. Workloads run under the
+rootless deployment account.
 
 For standalone HTTP services behind a host reverse proxy, follow the
 [Compose recipe](compose.md). Mim is optional.
 
-To update, install the new release alongside the old one, select its versioned
-runtime path and recreate the affected containers. Installing binaries does not
-update a running sandbox. Retain old packages while running or stopped containers
-reference them. Distinct package names make release installation explicit;
-ordinary `dnf upgrade` does not select a newly named runtime release.
+To update, stop the affected containers, download and verify the new package,
+install it using the same command, then recreate the containers. The package
+manager replaces the installed release. Installing binaries does not update
+running sandboxes. Packages are distributed through GitHub releases; host package
+updates alone do not download a new release.
 
-For an archive installation, keep the complete layout together in a versioned
-directory, including `gvisor-bin/`. Runtime helpers need to traverse that path
+Packages before `20261019.0-mim.2` used versioned names and directories. Change
+their Compose runtime paths once to `/usr/lib/mim-gvisor/profiles/online/runsc`
+(or the selected profile), recreate the containers, then remove the old packages
+when nothing references them.
+
+For an archive installation, keep the complete layout together, including
+`gvisor-bin/`. Runtime helpers need to traverse that path
 after changing credentials; a private home directory can prevent execution.
 
 ## Build
