@@ -14,7 +14,8 @@ fi
 bazel='bazel --batch --output_user_root=/cache/bazel --host_jvm_args=-Xmx1g'
 # Use the process sandbox; upstream actions marked no-sandbox run locally.
 options='--jobs=2 --local_resources=cpu=2 --local_resources=memory=2048 --spawn_strategy=processwrapper-sandbox,local'
-common=(DOCKER_BUILD=false "BAZEL=$bazel" "BAZEL_OPTIONS=$options")
+# Share compiled dependencies between the checks and the release binaries.
+common=(DOCKER_BUILD=false "BAZEL=$bazel" "BAZEL_OPTIONS=$options" 'OPTIONS=-c opt')
 
 test_runtime() {
     python3 -m unittest discover -s mim -p '*_test.py'
@@ -36,7 +37,7 @@ build_bundle() (
     fi
     stage=$(mktemp -d /out/stage.XXXXXX)
     trap 'rm -rf -- "$stage"' EXIT
-    make "${common[@]}" copy OPTIONS='-c opt' TARGETS=//:release "DESTINATION=$stage"
+    make "${common[@]}" copy TARGETS=//:release "DESTINATION=$stage"
     python3 mim/package.py "$stage" /out
 )
 
