@@ -12,6 +12,7 @@ downstream version. Published tags identify tested builds.
 | Rootless systemd cgroups | Use the caller's user manager and delegated hierarchy. Includes [PR 13853](https://github.com/google/gvisor/pull/13853). |
 | Resource-controller checks | Refuse unavailable requested controllers on creation, updates and restored state; respect systemd controller disablement. |
 | Imported terminals | Give donated terminals guest devpts names, ownership and normal reopening/lifetime behavior. |
+| Shared-mount atomic rename | Permit RENAME_NOREPLACE through LISAFS while retaining the host kernel's atomic no-overwrite check. |
 | Distribution tooling in `mim/` | Build complete archives, RPMs and DEBs; provide fixed runtime profiles and disposable integration checks. |
 
 gVisor supplies the syscall sandbox. Both ordinary Podman services and Mim can

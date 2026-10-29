@@ -509,17 +509,55 @@ TEST(Renameat2Test, NoReplaceDot) {
       SyscallFailsWithErrno(AnyOf(ENOSYS, EINVAL, EEXIST)));
 }
 
-// gVisor only supports RENAME_EXCHANGE when running under runsc, and its FUSE
-// implementation does not support it at all.
-bool RenameExchangeSupported() {
+// gVisor supports rename flags under runsc, but not through its FUSE
+// implementation.
+bool RenameFlagsSupported() {
   if (IsRunningOnGvisor() && !IsRunningOnRunsc()) {
     return false;
   }
   return absl::NullSafeStringView(getenv("GVISOR_FUSE_TEST")) != "TRUE";
 }
 
+TEST(Renameat2Test, NoReplaceDirectoryPublication) {
+  SKIP_IF(!RenameFlagsSupported());
+  auto root = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDir());
+  auto staged = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDirIn(root.path()));
+  auto data = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateFileWith(
+      staged.path(), "staged", TempPath::kDefaultFileMode));
+  const auto published = JoinPath(root.path(), "published");
+  ASSERT_THAT(renameat2(AT_FDCWD, staged.path().c_str(), AT_FDCWD,
+                        published.c_str(), RENAME_NOREPLACE),
+              SyscallSucceeds());
+  EXPECT_THAT(Exists(staged.path()), IsPosixErrorOkAndHolds(false));
+  EXPECT_THAT(GetContents(JoinPath(published, Basename(data.path()))),
+              IsPosixErrorOkAndHolds("staged"));
+
+  // A second publication must not replace even an empty directory.
+  auto next = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDirIn(root.path()));
+  auto existing = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDirIn(root.path()));
+  ASSERT_THAT(renameat2(AT_FDCWD, next.path().c_str(), AT_FDCWD,
+                        existing.path().c_str(), RENAME_NOREPLACE),
+              SyscallFailsWithErrno(EEXIST));
+  EXPECT_THAT(Exists(next.path()), IsPosixErrorOkAndHolds(true));
+  EXPECT_THAT(Exists(existing.path()), IsPosixErrorOkAndHolds(true));
+}
+
+TEST(Renameat2Test, NoReplacePreservesFileContents) {
+  SKIP_IF(!RenameFlagsSupported());
+  auto root = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDir());
+  auto source = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateFileWith(
+      root.path(), "source", TempPath::kDefaultFileMode));
+  auto target = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateFileWith(
+      root.path(), "target", TempPath::kDefaultFileMode));
+  ASSERT_THAT(renameat2(AT_FDCWD, source.path().c_str(), AT_FDCWD,
+                        target.path().c_str(), RENAME_NOREPLACE),
+              SyscallFailsWithErrno(EEXIST));
+  EXPECT_THAT(GetContents(source.path()), IsPosixErrorOkAndHolds("source"));
+  EXPECT_THAT(GetContents(target.path()), IsPosixErrorOkAndHolds("target"));
+}
+
 TEST(Renameat2Test, ExchangeDirectories) {
-  SKIP_IF(!RenameExchangeSupported());
+  SKIP_IF(!RenameFlagsSupported());
   absl::string_view c1 = "xyz";
   absl::string_view c2 = "abc";
   const auto d1 =
@@ -545,7 +583,7 @@ TEST(Renameat2Test, ExchangeDirectories) {
 }
 
 TEST(Renameat2Test, PathDoesNotExist) {
-  SKIP_IF(!RenameExchangeSupported());
+  SKIP_IF(!RenameFlagsSupported());
   const auto d1 =
       ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDirIn(GetAbsoluteTestTmpdir()));
   // d2 doesn't exist.
@@ -570,7 +608,7 @@ TEST(Renameat2Test, InvalidFlags) {
 }
 
 TEST(Renameat2Test, ExchangeFiles) {
-  SKIP_IF(!RenameExchangeSupported());
+  SKIP_IF(!RenameFlagsSupported());
   absl::string_view c1 = "xyz";
   absl::string_view c2 = "abc";
   const auto p1 =
@@ -590,7 +628,7 @@ TEST(Renameat2Test, ExchangeFiles) {
 }
 
 TEST(Renameat2Test, ExchangeFilesSameParent) {
-  SKIP_IF(!RenameExchangeSupported());
+  SKIP_IF(!RenameFlagsSupported());
   absl::string_view c1 = "xyz";
   absl::string_view c2 = "abc";
   const auto parent =
@@ -608,7 +646,7 @@ TEST(Renameat2Test, ExchangeFilesSameParent) {
 }
 
 TEST(Renameat2Test, ExchangeFileAndDirectory) {
-  SKIP_IF(!RenameExchangeSupported());
+  SKIP_IF(!RenameFlagsSupported());
   absl::string_view c = "xyz";
   const auto p1 =
       ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDirIn(GetAbsoluteTestTmpdir()));
@@ -634,7 +672,7 @@ TEST(Renameat2Test, ExchangeFileAndDirectory) {
 }
 
 TEST(Renameat2Test, ExchangeWithAncestorDirectory) {
-  SKIP_IF(!RenameExchangeSupported());
+  SKIP_IF(!RenameFlagsSupported());
   const auto ancestor =
       ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDirIn(GetAbsoluteTestTmpdir()));
   const auto descendant =

@@ -1479,11 +1479,6 @@ func (fs *filesystem) RenameAt(ctx context.Context, rp *vfs.ResolvingPath, oldPa
 	if opts.Flags&(linux.RENAME_EXCHANGE|linux.RENAME_NOREPLACE) == linux.RENAME_EXCHANGE|linux.RENAME_NOREPLACE {
 		return linuxerr.EINVAL
 	}
-	if fs.opts.interop == InteropModeShared && opts.Flags&linux.RENAME_NOREPLACE != 0 {
-		// Requires 9P support to synchronize with other remote filesystem
-		// users.
-		return linuxerr.EINVAL
-	}
 	exchange := opts.Flags&linux.RENAME_EXCHANGE != 0
 
 	newName := rp.Component()
@@ -1621,7 +1616,9 @@ func (fs *filesystem) RenameAt(ctx context.Context, rp *vfs.ResolvingPath, oldPa
 		return err
 	}
 
-	// Update the remote filesystem.
+	// Update the remote filesystem. Preserve RENAME_NOREPLACE for the host
+	// syscall: on shared mounts an external writer may have created the
+	// destination since revalidation, so the cached check above is insufficient.
 	if !renamed.inode.isSynthetic() {
 		if err := oldParent.inode.rename(ctx, oldName, newParent, newName, opts.Flags); err != nil {
 			vfsObj.AbortRenameDentry(&handle, &renamed.vfsd, replacedVFSD)
